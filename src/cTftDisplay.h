@@ -44,81 +44,89 @@
 // #define OREINTATION 3
 
 /*TFT Display Dimensions — PORTRAIT*/
-#define SCREEN_WIDTH  240   // was 240 (portrait)
-#define SCREEN_HEIGHT 320   // was 320 (portrait)
+#define SCREEN_WIDTH 240  // was 240 (portrait)
+#define SCREEN_HEIGHT 320 // was 320 (portrait)
 #define OREINTATION 0
 
-#define TIMER_COUNTDOWN 60
+#define TIMER_COUNTDOWN 5
 
-#define DARK_BG   TFT_BLACK
-#define DARK_FG   TFT_WHITE
-#define LIGHT_BG  TFT_WHITE
-#define LIGHT_FG  TFT_BLACK
+#define DARK_BG TFT_BLACK
+#define DARK_FG TFT_WHITE
+#define LIGHT_BG TFT_WHITE
+#define LIGHT_FG TFT_BLACK
 
 #define LOGO_COLOUR 0x8A2BE2
 
-typedef struct __attribute__((packed)){
+typedef struct __attribute__((packed))
+{
   char pName[20];
   char nearestPonds[40] = "No ponds in range";
   float DoValueMgL;
   float DoSaturationValue;
   float TempValue;
   float Salinity;
-}leftPanel_t;
+} leftPanel_t;
 
-typedef struct __attribute__((packed)){
+typedef struct __attribute__((packed))
+{
   char time[10];
   uint8_t Satellites;
   int rssi;
   int batteryPercentage;
   bool LocationStatus;
   bool FramesInBackup;
-}Header_t;
+} Header_t;
 
-typedef struct __attribute__((packed)){
+typedef struct __attribute__((packed))
+{
   bool isWebScoketsConnected = false;
   bool isHttpConnected = false;
-  char ServerIp[25]= "0.0.0.0";
+  char ServerIp[25] = "0.0.0.0";
   char LocalIp[25] = "0.0.0.0";
   char RouterMac[25] = "No Internet";
   char DeviceMac[25] = "";
   uint8_t FooterType = 0;
-}Footer_t;
+} Footer_t;
 
-enum ButtonEvent {
+enum ButtonEvent
+{
   BUTTON_NONE,
   JUST_PRESSED,
   SHORT_PRESS_DETECTED,
   LONG_PRESS_DETECTED
 };
 
-typedef struct __attribute__((packed)){
+typedef struct __attribute__((packed))
+{
   uint8_t UploadStatus;
   char pName[20];
   char time[10];
   float doValue;
-}PopUp_t;
+} PopUp_t;
 
-typedef struct __attribute__((packed)){
+typedef struct __attribute__((packed))
+{
   char WiFiSsid[50];
   char WiFiPass[30];
   char FirmwareVersion[10];
   uint8_t backUpFramesCnt;
   ButtonEvent lastButtonEvent = BUTTON_NONE;
   uint8_t Counter;
-  char DefaultServerIp[25]= "34.93.69.40";
+  char DefaultServerIp[25] = "34.93.69.40";
   char DefaultWiFiSsid[50] = "Nextaqua_EAP110";
   bool IsSensorConnected = false;
-}GeneralVaraibles_t;
+} GeneralVaraibles_t;
 
-enum ConfigState {
-    CONFIG_MENU,
-    CONFIG_CONFIRM,
-    CONFIG_EXECUTING,
-    CONFIG_SUCCESS
+enum ConfigState
+{
+  CONFIG_MENU,
+  CONFIG_CONFIRM,
+  CONFIG_EXECUTING,
+  CONFIG_SUCCESS
 };
 
-class CDisplay {
+class CDisplay
+{
 public:
   void begin(void);
   void ClearDisplay(void);
@@ -177,7 +185,7 @@ private:
   void drawMemoryCard(int x, int y, int w, int h, uint16_t color);
   void drawTickInCircle(int x, int y, int radius);
   void drawXInCircle(int x, int y, int radius);
-  void drawWifiQRCode(String ssid, String password) ;
+  void drawWifiQRCode(String ssid, String password);
 
   /*Data in the Left Panel -> PondName, NearestPondsData, DoValue, TempValue, SalintiyValue*/
   void drawLeftPanel();
@@ -186,7 +194,7 @@ private:
   void drawRightPanel();
   void drawHourglass(int x, int y, int h, int countdown, int maxCountdown);
   void drawCircularTimer(int cx, int cy, int r, int countdown, int maxCountdown);
-  void drawWrappedText(int x, int y, int maxWidth, const String& text, int lineGap = 1);
+  void drawWrappedText(int x, int y, int maxWidth, const String &text, int lineGap = 1);
 
   /*Entering config mode,  Configuration Menu -> Reset Wifi, Reset Server, Calibrate, About Me, Return Home*/
   uint8_t configMenuIndex = 0;
@@ -195,13 +203,12 @@ private:
   bool showResult = false;
   unsigned long resultTimer = 0;
   const uint8_t CONFIG_MENU_COUNT = 6;
-  const int calibrationDuration = 180;  // 180 seconds
+  const int calibrationDuration = 180; // 180 seconds
   unsigned long calibrationStartMillis = 0;
   bool inCalibration = false;
 
   /*Default Pages*/
   void NextAqua(int x, int y, int b, int color);
-  void drawShrimpImageFromFlash();
   void drawCompanyLogo();
 
   void ConfigModeScreenHandler();

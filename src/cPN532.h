@@ -8,16 +8,15 @@
 
 class CPN532
 {
-    public:
-        CPN532(void);  // Constructor
-        ~CPN532(void); // Destructor
+public:
+    CPN532(void);  // Constructor
+    ~CPN532(void); // Destructor
 
-        void init(void);                   // Initialize RFID module
-        bool isTagPresent(void);        // Check if a new tag is present
-        bool readDataFromCard(char *dest); // Read data from tag
-        bool writeDataToCard(const char *data); // Write data to tag
-    private:
-        
+    void init(void);                        // Initialize RFID module
+    bool isTagPresent(void);                // Check if a new tag is present
+    bool readDataFromCard(char *dest);      // Read data from tag
+    bool writeDataToCard(const char *data); // Write data to tag
+private:
 };
 
 #endif

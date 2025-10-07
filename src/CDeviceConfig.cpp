@@ -8,12 +8,11 @@
 #define debugPrintf(...) Serial.printf(__VA_ARGS__)
 #define debugPrintlnf(...) Serial.println(F(__VA_ARGS__))
 #else
-#define debugPrint(...)    //blank line
-#define debugPrintln(...)  //blank line
-#define debugPrintf(...)   //blank line
-#define debugPrintlnf(...) //blank line
+#define debugPrint(...)    // blank line
+#define debugPrintln(...)  // blank line
+#define debugPrintf(...)   // blank line
+#define debugPrintlnf(...) // blank line
 #endif
-
 
 /*Construct*/
 CDeviceConfig::CDeviceConfig()
@@ -25,6 +24,6 @@ CDeviceConfig::CDeviceConfig()
     m_u8ReceivedConfigType = NO_CNFG;
 }
 /*Destruct*/
-CDeviceConfig::~CDeviceConfig(){
-
+CDeviceConfig::~CDeviceConfig()
+{
 }

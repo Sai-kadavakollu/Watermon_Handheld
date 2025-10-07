@@ -60,8 +60,9 @@ void CGps::gpstask(void)
       mPosition.m_lng = gps1.location.lng();
       /*HDop and Satellites*/
       mPosition.hDop = gps1.hdop.hdop();
-      if (gps1.satellites.isUpdated()) {
-        mPosition.m_iSatellites =  gps1.satellites.value();
+      if (gps1.satellites.isUpdated())
+      {
+        mPosition.m_iSatellites = gps1.satellites.value();
         // Serial.print("Satellites in view: ");
         // Serial.println(mPosition.m_iSatellites);
       }
@@ -72,7 +73,6 @@ void CGps::gpstask(void)
 
       uint8_t month = gps1.date.month();
       uint32_t year = gps1.date.year();
-
 
       Epoch = ConvertToEpoch(year, month, GpsDay, GpsHour, GpsMins, sec);
 

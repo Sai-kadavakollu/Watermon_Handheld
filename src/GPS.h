@@ -19,7 +19,6 @@ public:
     // ~cPosition();
 };
 
-
 class CGps
 {
 private:

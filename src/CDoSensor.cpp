@@ -277,7 +277,7 @@ int CSensor::setSalinity(void)
 
   // Write multiple registers
   uint8_t result = node.writeMultipleRegisters(salinity.startAddress, salinity.numRegisters);
-  debugPrintf("result %u\n",result);
+  debugPrintf("result %u\n", result);
   if (result == node.ku8MBSuccess)
   {
     debugPrintln("Command successfully sent.");
@@ -331,48 +331,56 @@ void CSensor::startMeasurement(void)
 
 /*Funtion to get the Temperatre and DO vales with retry mechanism*/
 void CSensor::getTempAndDoValues(void)
-{ 
-    int val = getDataFrmSensor(getTempDoVals.startAddress, getTempDoVals.numRegisters, getTempDoVals.responseBuffer);
-    if (val) {
-      // Temporary variables to hold extracted values
-      float tempReading, doReading, doMglReading;
-      
-      /*Extract the values from sensor response*/
-      extractTempAndDoValues(getTempDoVals.responseBuffer, &tempReading, &doReading, &doMglReading);
-      
-      // Validate extracted values with strict filtering
-      bool validTemp = (tempReading >= 0.0 && tempReading <= 60.0 && !isnan(tempReading) && !isinf(tempReading));
-      bool validDo = (doReading >= 0.0 && doReading <= 200.0 && !isnan(doReading) && !isinf(doReading));
-      bool validDoMgl = (doMglReading >= 0.0 && doMglReading <= 25.0 && !isnan(doMglReading) && !isinf(doMglReading));
-      
-      // Filter out extreme invalid values like -23487294
-      if (tempReading < 0.0 || tempReading > 100.0) validTemp = false;
-      if (doReading < 0.0 || doReading > 200.0) validDo = false;
-      if (doMglReading <= 0.0 || doMglReading > 25.0) validDoMgl = false;
-      
-      // Only update values if they are valid
-      if (validTemp && validDo && validDoMgl) {
-        m_fTemp = tempReading;
-        m_fDo = doReading;
-        m_fDoMgl = doMglReading;
-        
-        noSensor = false;
-        
-        debugPrintf(" [DoSensor][Success] Temp: %.2f, DO%%: %.2f, DO mg/L: %.2f\n", m_fTemp, m_fDo, m_fDoMgl);
-        
-        if (!m_fSalinity)
-          getSalinity();
-          
-      } else {
-        debugPrintf(" [DoSensor][InvalidValues] Temp: %.2f (valid:%d), DO%%: %.2f (valid:%d), DO mg/L: %.2f (valid:%d)\n",tempReading, validTemp, doReading, validDo, doMglReading, validDoMgl);
-      }
-    } else {
-      noSensor = true;
-      m_fDo = 0.0;
-      m_fDoMgl = 0.0;
-      m_fTemp = 0.0;
-      debugPrintln(" [DoSensor][CommFail] Modbus communication failed\n");
+{
+  int val = getDataFrmSensor(getTempDoVals.startAddress, getTempDoVals.numRegisters, getTempDoVals.responseBuffer);
+  if (val)
+  {
+    // Temporary variables to hold extracted values
+    float tempReading, doReading, doMglReading;
+
+    /*Extract the values from sensor response*/
+    extractTempAndDoValues(getTempDoVals.responseBuffer, &tempReading, &doReading, &doMglReading);
+
+    // Validate extracted values with strict filtering
+    bool validTemp = (tempReading >= 0.0 && tempReading <= 60.0 && !isnan(tempReading) && !isinf(tempReading));
+    bool validDo = (doReading >= 0.0 && doReading <= 200.0 && !isnan(doReading) && !isinf(doReading));
+    bool validDoMgl = (doMglReading >= 0.0 && doMglReading <= 25.0 && !isnan(doMglReading) && !isinf(doMglReading));
+
+    // Filter out extreme invalid values like -23487294
+    if (tempReading < 0.0 || tempReading > 100.0)
+      validTemp = false;
+    if (doReading < 0.0 || doReading > 200.0)
+      validDo = false;
+    if (doMglReading <= 0.0 || doMglReading > 25.0)
+      validDoMgl = false;
+
+    // Only update values if they are valid
+    if (validTemp && validDo && validDoMgl)
+    {
+      m_fTemp = tempReading;
+      m_fDo = doReading;
+      m_fDoMgl = doMglReading;
+
+      noSensor = false;
+
+      debugPrintf(" [DoSensor][Success] Temp: %.2f, DO%%: %.2f, DO mg/L: %.2f\n", m_fTemp, m_fDo, m_fDoMgl);
+
+      if (!m_fSalinity)
+        getSalinity();
     }
+    else
+    {
+      debugPrintf(" [DoSensor][InvalidValues] Temp: %.2f (valid:%d), DO%%: %.2f (valid:%d), DO mg/L: %.2f (valid:%d)\n", tempReading, validTemp, doReading, validDo, doMglReading, validDoMgl);
+    }
+  }
+  else
+  {
+    noSensor = true;
+    m_fDo = 0.0;
+    m_fDoMgl = 0.0;
+    m_fTemp = 0.0;
+    debugPrintln(" [DoSensor][CommFail] Modbus communication failed\n");
+  }
   debugPrint("Final Values - Temp : ");
   debugPrintln(m_fTemp);
   debugPrint("DO(%) : ");

@@ -23,9 +23,9 @@
 #define debugPrintlnf(...) // blank line
 #endif
 
-
 /* Construct */
-CPondConfig::CPondConfig(FILESYSTEM *fs) {
+CPondConfig::CPondConfig(FILESYSTEM *fs)
+{
   _fileSystem = fs;
 }
 /* Destruct */
@@ -97,36 +97,14 @@ int CPondConfig::loadPondConfig()
         JsonArray slots = configInfo["config"];
         int length = slots.size();
         debugPrintf("length: %d\n", length);
-        if (length == 1)
-        {
-          char data[150];
-          strncpy(data, slots[0], sizeof(data));
-          debugPrintln(data);
 
-          long locationVersion;
-          char pondName[50];
-          char pondId[50];
-          int salinity;
-          char locationId[50];
-
-          sscanf(data, "%ld|%[^|]|%[^|]|%d|%[^|]", &locationVersion, pondName, pondId, &salinity, locationId);
-          strncpy(m_cCurrentPondname, pondName, sizeof(m_cCurrentPondname));
-          strncpy(m_u64currentPondId, pondId, sizeof(m_u64currentPondId));
-          strncpy(m_cLocationId, locationId, sizeof(m_cLocationId));
-          m_iCurrentSalinity = salinity;
-          return 1;
-        }
-
-        /* Read location versions once */
-        readLocationVersions();
-
-        /* Set to track processed pondIds */
-        set<string> processedPondIds;
-
+        /*Length of config array is total Number of ponds*/
+        m_u8TotalNoOfPonds = length;
         /* Parse the data in the file system */
         for (uint8_t i = 0; i < length; i++)
         {
           char data[150];
+          bool isPondBoundariesDataAvailable = AVAILABLE;
           strncpy(data, slots[i], sizeof(data));
           debugPrintln(data);
 
@@ -135,87 +113,92 @@ int CPondConfig::loadPondConfig()
           char pondId[50];
           int salinity;
           char locationId[50];
-  
-          sscanf(data, "%ld|%[^|]|%[^|]|%d|%[^|]", &locationVersion, pondName, pondId, &salinity, locationId);
-           
-          loadPondStatusFromFileOrConfig(slots);
-          /* Track the processed pondId */
-          processedPondIds.insert(pondId);
+          int activeStatus = 0;
 
-          /* Check whether the pondId is present in the map, if not add it */
-          if (m_locationVersions.find(pondId) != m_locationVersions.end())
+          sscanf(data, "%ld|%[^|]|%[^|]|%d|%[^|]|%d", &locationVersion, pondName, pondId, &salinity, locationId, &activeStatus);
+
+          /* Check filesystem for pond boundary file */
+          char pondFileName[100];
+          snprintf(pondFileName, sizeof(pondFileName), "/%s.txt", pondName);
+
+          int fileSize = _fileSystem->getFileSize(pondFileName);
+          if (fileSize > 0)
           {
-            if (m_locationVersions[pondId] != locationVersion)
+            /* File exists, read and check version */
+            char *pondData = new char[fileSize + 1];
+            int ret = _fileSystem->readFile(pondFileName, pondData);
+            if (ret > 0)
             {
-              debugPrintf("Updating version for pondId: %s\n", pondId);
-              m_locationVersions[pondId] = locationVersion;
-              updatedPondIds[pondId] = pondName;
-              m_bGetPondBoundaries = true;
-              updateFile = true;
+              DynamicJsonDocument pondDoc(fileSize * 2);
+              DeserializationError err = deserializeJson(pondDoc, pondData);
+              delete[] pondData;
+
+              if (err.code() == DeserializationError::Ok)
+              {
+                if (pondDoc.containsKey("locationVersion"))
+                {
+                  long storedVersion = pondDoc["locationVersion"];
+                  if (storedVersion != locationVersion)
+                  {
+                    debugPrintf("Version mismatch for pond %s: stored=%ld, new=%ld\n", pondName, storedVersion, locationVersion);
+                    isPondBoundariesDataAvailable = NOT_AVAILABLE;
+                  }
+                }
+                else
+                {
+                  debugPrintf("No version field in pond file %s\n", pondName);
+                  isPondBoundariesDataAvailable = NOT_AVAILABLE;
+                }
+              }
+              else
+              {
+                debugPrintf("Failed to parse JSON for pond %s\n", pondName);
+                isPondBoundariesDataAvailable = NOT_AVAILABLE;
+              }
+            }
+            else
+            {
+              delete[] pondData;
+              debugPrintf("Failed to read pond file for %s\n", pondName);
+              isPondBoundariesDataAvailable = NOT_AVAILABLE;
             }
           }
           else
           {
-            debugPrintf("Adding new pondId: %s with version: %ld\n", pondId, locationVersion);
-            m_locationVersions[pondId] = locationVersion;
-            updatedPondIds[pondId] = pondName;
-            m_bGetPondBoundaries = true;
-            updateFile = true;
+            /* File doesn't exist */
+            debugPrintf("Pond file not found for %s\n", pondName);
+            isPondBoundariesDataAvailable = NOT_AVAILABLE;
           }
-
-          // Update the PondSettingList array
-          m_oPondSettingList[i].m_iLocationVersion = locationVersion;
-          strncpy(m_oPondSettingList[i].m_cPondname, pondName, sizeof(m_oPondSettingList[i].m_cPondname));
-          strncpy(m_oPondSettingList[i].m_cPondId, pondId, sizeof(m_oPondSettingList[i].m_cPondId));
-          m_oPondSettingList[i].m_iSalinity = salinity;
-          strncpy(m_oPondSettingList[i].m_cLocationID, locationId, sizeof(m_oPondSettingList[i].m_cLocationID));
-        }
-        /*BEGIN*/
-        /*Below Lines of code belongs to count total No of Active Ponds and Total no of ponds available in the config*/
-          m_u8TotalNoOfPonds = m_pondStatusMap.size();
-          int activeCount = 0;
-          for (const auto& pair : m_pondStatusMap) {
-              if (pair.second.ActiveStatus) activeCount++;
-          }
-          m_u8TotalNoOfActivePonds = activeCount;
-          debugPrintf("\n Total Ponds Mapped: %d\n", m_u8TotalNoOfPonds);
-          debugPrintf("Active Ponds: %d\n", m_u8TotalNoOfActivePonds);
-        /*END*/
-
-        /* Remove entries from the map that are not in the processedPondIds set */
-        for (auto item = m_locationVersions.begin(); item != m_locationVersions.end();)
-        {
-          if (processedPondIds.find(item->first) == processedPondIds.end())
+          if (isPondBoundariesDataAvailable == NOT_AVAILABLE)
           {
-            debugPrintf("Removing unused pondId: %s\n", item->first.c_str());
-            item = m_locationVersions.erase(item);
+            Serial.println("Pond Boundaries not available so setting the pond colors to blue");
+            m_bGetPondBoundaries = true;
+            updatedPondIds[pondId] = pondName;
+            /*Initially when the pond config is loaded from file keep all the ponds color in blue representing
+            the boundaries are not available for those ponds and later when boundaries are loaded show their state whether active or harvested*/
+            m_pondStatusMap[pondName] = {!isPondBoundariesDataAvailable, activeStatus, POND_BOUNDARIES_NOT_AVAILABLE};
+            /*Save only teh single pond status*/
+            saveSinglePondStatusToFile(pondName);
           }
           else
           {
-            ++item;
+            Serial.printf("Pond boundaries available , active Status: %d \n", activeStatus);
+            m_pondStatusMap[pondName] = {!isPondBoundariesDataAvailable, activeStatus, activeStatus};
           }
+          // Update the PondSettingList array
+          m_oPondList[i].m_iLocationVersion = locationVersion;
+          strncpy(m_oPondList[i].m_cPondname, pondName, sizeof(m_oPondList[i].m_cPondname));
+          strncpy(m_oPondList[i].m_cPondId, pondId, sizeof(m_oPondList[i].m_cPondId));
+          m_oPondList[i].m_iSalinity = salinity;
+          strncpy(m_oPondList[i].m_cLocationID, locationId, sizeof(m_oPondList[i].m_cLocationID));
+          m_oPondList[i].PondActiveStatus = activeStatus;
         }
-
-        if (updateFile)
+        /*Update Pond Status from Stored values if no file found save the local data in file*/
+        if (!loadPondStatusFromFile())
         {
-          /*add the data into the file system*/
-          DynamicJsonDocument doc(2500);
-          JsonObject config = doc.createNestedObject("config");
-          for (const auto &entry : m_locationVersions)
-          {
-            config[entry.first] = entry.second;
-          }
-          string jsonStr;
-          serializeJson(doc, jsonStr);
-          _fileSystem->writeFile(LOCATION_VERSIONS, jsonStr.c_str());
+          Serial.println(" Saving the status to the pond map file");
+          savePondStatusToFile();
         }
-
-        /* Output the updated pondIds */
-        // debugPrintln("\nUpdated PondIds and PondNames:");
-        // for (const auto &pair : updatedPondIds)
-        // {
-        //   debugPrintf("PondId: %s, PondName: %s\n", pair.first.c_str(), pair.second.c_str());
-        // }
       }
       else
       {
@@ -230,151 +213,159 @@ int CPondConfig::loadPondConfig()
   }
   return 1;
 }
-
-/************************************************************
- * Read Pond Setting From File
- *************************************************************/
-int CPondConfig::readLocationVersions()
+/*************************************************
+ * save pond status in file system
+ *************************************************/
+bool CPondConfig::savePondStatusToFile()
 {
-  char rdata[1024];
-  int ret = 0;
-  int Size = _fileSystem->getFileSize(LOCATION_VERSIONS);
-  debugPrintf("Size of the file is %d\n", Size);
+  DynamicJsonDocument doc(4096); // Adjust size for number of ponds
 
-  if (Size >= sizeof(rdata)) // Ensure file size is within the buffer's capacity
+  for (const auto &pair : m_pondStatusMap)
   {
-    debugPrintln("Wrong Setting file size...");
-    return 0;
+    JsonObject obj = doc.createNestedObject(pair.first.c_str());
+    obj["pb"] = pair.second.isBoundariesAvailable; // pb = pond boundaries available
+    obj["isAct"] = pair.second.isActive;
+    obj["pStat"] = pair.second.PondDataStatus;
   }
 
-  ret = _fileSystem->readFile(LOCATION_VERSIONS, rdata);
-  if (ret > 0)
-  {
-    DynamicJsonDocument configInfo(sizeof(rdata)); // Allocate a JSON document based on buffer size
+  std::string jsonStr;
+  serializeJson(doc, jsonStr);
 
-    /* Deserialize the JSON content */
-    DeserializationError err = deserializeJson(configInfo, rdata);
-    if (err.code() == DeserializationError::Ok)
-    {
-      if (configInfo.containsKey("config"))
-      {
-        JsonObject configArray = configInfo["config"];
-
-        for (JsonPair obj : configArray)
-        {
-          string key = obj.key().c_str();
-          int value = obj.value().as<int>();
-
-          // Store the key-value pair in the map
-          m_locationVersions[key] = value;
-        }
-      }
-      else
-      {
-        debugPrintln("No config in JSON");
-      }
-    }
-    else
-    {
-      debugPrintln("Failed to parse JSON");
-    }
-  }
-  else
-  {
-    debugPrintf("Failed to read file, ret = %d\n", ret);
-  }
-  return 0;
+  debugPrintf("  pond status map (%d entries) to file\n", m_pondStatusMap.size());
+  return _fileSystem->writeFile(PONDS_STATUS_CONFIG, jsonStr.c_str());
 }
 
+bool CPondConfig::saveSinglePondStatusToFile(const std::string &pondName)
+{
+  int size = _fileSystem->getFileSize(PONDS_STATUS_CONFIG);
+  if (size <= 0)
+  {
+    debugPrintln("PONDS_STATUS_CONFIG not found or empty");
+    return false;
+  }
 
-bool CPondConfig::savePondStatusToFile() {
-    DynamicJsonDocument doc(2048);  // Adjust size for number of ponds
+  // Allocate buffer on heap for file content
+  const size_t bufferSize = 2048; // Adjust based on expected file size
+  char *buffer = new char[bufferSize];
+  if (!buffer)
+  {
+    debugPrintf("Heap allocation failed for buffer!\n");
+    return false;
+  }
+  memset(buffer, 0, bufferSize);
 
-    for (const auto& pair : m_pondStatusMap) {
-        JsonObject obj = doc.createNestedObject(pair.first.c_str());
-        obj["active"] = pair.second.ActiveStatus;
-        obj["backup"] = pair.second.Backup;
-    }
+  // Read existing pond status file
+  if (_fileSystem->readFile(PONDS_STATUS_CONFIG, buffer) <= 0)
+  {
+    debugPrintf("Pond status file not found. Creating a new one.\n");
+    strcpy(buffer, "{}"); // Start fresh if file missing
+  }
 
-    std::string jsonStr;
-    serializeJson(doc, jsonStr);
+  // Convert to std::string for easier JSON handling
+  std::string jsonContent(buffer);
 
-    debugPrintf("Saving pond status map (%d entries) to file\n", m_pondStatusMap.size());
-    return _fileSystem->writeFile(PONDS_STATUS_CONFIG, jsonStr.c_str());
+  // Free the buffer now that we have std::string
+  delete[] buffer;
+
+  // Allocate JSON document on heap
+  DynamicJsonDocument *doc = new DynamicJsonDocument(4096); // adjust if needed
+  if (!doc)
+  {
+    debugPrintf("Heap allocation failed for JSON document!\n");
+    return false;
+  }
+
+  // Parse existing JSON
+  DeserializationError error = deserializeJson(*doc, jsonContent.c_str());
+  if (error)
+  {
+    debugPrintf("Failed to parse existing pond status JSON: %s\n", error.c_str());
+    delete doc;
+    return false;
+  }
+
+  // Ensure the pond exists in memory map
+  auto it = m_pondStatusMap.find(pondName);
+  if (it == m_pondStatusMap.end())
+  {
+    debugPrintf("Pond '%s' not found in m_pondStatusMap.\n", pondName.c_str());
+    delete doc;
+    return false;
+  }
+
+  // Update or create JSON entry for this pond
+  JsonObject obj = (*doc)[pondName.c_str()].to<JsonObject>();
+  obj["pb"] = it->second.isBoundariesAvailable;
+  obj["isAct"] = it->second.isActive;
+  obj["pStat"] = it->second.PondDataStatus;
+
+  // Serialize updated JSON back to string
+  std::string newJson;
+  serializeJson(*doc, newJson);
+
+  // Free JSON document
+  delete doc;
+
+  // Write back to file
+  bool result = _fileSystem->writeFile(PONDS_STATUS_CONFIG, newJson.c_str());
+  debugPrintf("Saved single pond '%s' status to file: %s\n",
+              pondName.c_str(), result ? "SUCCESS" : "FAILURE");
+
+  return result;
 }
 
+/*************************************************
+ * Load pond status from file system
+ *************************************************/
+bool CPondConfig::loadPondStatusFromFile()
+{
+  int size = _fileSystem->getFileSize(PONDS_STATUS_CONFIG);
+  if (size <= 0)
+  {
+    debugPrintln("PONDS_STATUS_CONFIG not found or empty");
+    return false;
+  }
 
-bool CPondConfig::loadPondStatusFromFile() {
-    int size = _fileSystem->getFileSize(PONDS_STATUS_CONFIG);
-    if (size <= 0) {
-        debugPrintln("PONDS_STATUS_CONFIG not found or empty");
-        return false;
-    }
-
-    char *buffer = new char[size + 1];
-    if (!_fileSystem->readFile(PONDS_STATUS_CONFIG, buffer)) {
-        debugPrintln("Failed to read PONDS_STATUS_CONFIG");
-        delete[] buffer;
-        return false;
-    }
-
-    DynamicJsonDocument doc(size * 2);
-    DeserializationError err = deserializeJson(doc, buffer);
+  char *buffer = new char[size + 1];
+  if (!_fileSystem->readFile(PONDS_STATUS_CONFIG, buffer))
+  {
+    debugPrintln("Failed to read PONDS_STATUS_CONFIG");
     delete[] buffer;
+    return false;
+  }
 
-    if (err) {
-        debugPrintf("JSON deserialization failed: %s\n", err.c_str());
-        return false;
-    }
+  DynamicJsonDocument doc(size * 2);
+  DeserializationError err = deserializeJson(doc, buffer);
+  delete[] buffer;
 
-    m_pondStatusMap.clear();
+  if (err)
+  {
+    debugPrintf("JSON deserialization failed: %s\n", err.c_str());
+    return false;
+  }
+  /*update pond st*/
+  for (JsonPair kv : doc.as<JsonObject>())
+  {
+    const char *pondName = kv.key().c_str();
+    JsonObject obj = kv.value();
+    m_pondStatusMap[pondName].isActive = obj["isAct"];
+    m_pondStatusMap[pondName].PondDataStatus = obj["pStat"];
+  }
 
-    for (JsonPair kv : doc.as<JsonObject>()) {
-        const char* pondName = kv.key().c_str();
-        JsonObject obj = kv.value();
-        bool active = obj["active"];
-        uint8_t backup = obj["backup"];
-        m_pondStatusMap[pondName] = { active, backup };
-    }
-
-    debugPrintf("Loaded %d pond statuses from file\n", m_pondStatusMap.size());
-    return true;
+  debugPrintf("Loaded %d pond statuses from file\n", m_pondStatusMap.size());
+  return true;
 }
 
+void CPondConfig::resetAllPondDataStatus()
+{
+  debugPrintln("Resetting all PondDataStatus values to 1 if they are active");
 
-bool CPondConfig::loadPondStatusFromFileOrConfig(JsonArray configArray) {
-    if (loadPondStatusFromFile() && !m_bMapNeedToBeUpdated) {
-        debugPrintln("Loaded pond status from saved file");
-        return true;
+  for (auto &pair : m_pondStatusMap)
+  {
+    if (pair.second.isActive)
+    {
+      pair.second.PondDataStatus = 1;
     }
-
-    debugPrintln("Building pond map from config array...");
-
-    for (JsonVariant v : configArray) {
-        const char* entry = v.as<const char*>();
-        char pondName[50];
-        int activeStatus = 0;
-
-        // Parse pondName and activeStatus
-        sscanf(entry, "%*[^|]|%[^|]|%*[^|]|%*d|%*[^|]|%d", pondName, &activeStatus);
-        //if config need to be updated, only update the active status not the backup one
-        bool isActive = (activeStatus == 1);
-        m_pondStatusMap[pondName] = { isActive, static_cast<uint8_t>(isActive) };
-    }
-    
-    // Save initial state for persistence
-    savePondStatusToFile();
-    m_bMapNeedToBeUpdated = false;
-    return true;
-}
-
-void CPondConfig::resetAllBackupToOne() {
-    debugPrintln("Resetting all backup values to 1");
-
-    for (auto& pair : m_pondStatusMap) {
-        if (pair.second.ActiveStatus) {
-            pair.second.Backup = 1;
-        }
-    }
-    savePondStatusToFile();
+  }
+  savePondStatusToFile();
 }

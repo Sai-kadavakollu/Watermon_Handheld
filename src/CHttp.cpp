@@ -54,7 +54,7 @@ uint8_t cHTTP::uploadDataFrame(char *Data)
         debugPrint("httpCode: ");
         debugPrintln(httpCode);
         debugPrintln(http.errorToString(httpCode));
-        
+
         if (httpCode == HTTP_CODE_OK)
         {
             debugPrintln("@@ Uploded to Nextaqua server :-)");

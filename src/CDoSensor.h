@@ -17,11 +17,11 @@ typedef struct
     uint16_t responseBuffer[];
 } m_oDOsensor;
 
-typedef union 
+typedef union
 {
     uint32_t uintValue;
     float floatValue;
-}FloatConverter;
+} FloatConverter;
 
 class CSensor
 {

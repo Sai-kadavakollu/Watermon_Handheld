@@ -3,8 +3,8 @@
 
 #define TOSTR(x) #x
 #define STRINGIFY(x) TOSTR(x)
-    
-#define FW_VERSION 24
+
+#define FW_VERSION 26
 #define BOARD_VERSION 5
 #define DEVICE_TYPE "DO"
 
@@ -25,43 +25,22 @@
 #define MAX_NEAREST_PONDS 2
 #define NEAREST_POND_MAX_VALUE 1500
 
-#define NO_FRAME    0
-#define TOUT_FRAME  1
+#define NO_FRAME 0
+#define TOUT_FRAME 1
 #define VDIFF_FRAME 2
-#define ACK_FRAME   3
-#define CALL_FRAME  4
+#define ACK_FRAME 3
+#define CALL_FRAME 4
 #define FAULT_FRAME 5
 #define TEST_FRAME 6
 
-#define LIVE_FRAME      0
-#define HISTORY_FRAME   1
-
-/*POND_MAP_FRAME_STORED_STATUS*/
-#define PONDMAP_VALUE_NOT_ACTIVE 0
-#define PONDMAP_VALUE_YET_TO_BE_TAKEN 1
-#define PONDMAP_VALUE_FRAME_STORED_TO_BACKUP 2
-#define PONDMAP_VALUE_FRAME_SENT_SUCESSFULLY 3
-#define PONDMAP_VALUE_TAKEN_BUT_ERROR 4
+#define LIVE_FRAME 0
+#define HISTORY_FRAME 1
 
 #define SHORT_PRESS 1
 #define LONG_PRESS 2
 #define VERY_LONG_PRESS 3
 
-#define CLEAR_WIFI_SETTINGS 2
-#define CLEAR_SERVER_SETTINGS 4
-#define BACK_TO_HOME 6
-
-#define GET_POND_DETAILS 2
-#define SEND_FRAME 4
-#define CALIBRATION 6
-
-#define CONFIG_TIME 50
-
-#define FILENAME_DEVICECONFIG "/DeviceConfig.txt" // File for storing the pond details when in fixed mode 
-
 #define EVENT_BASED_MODE 1
-#define CONTINUOUS_BASED_MODE 0
-#define RFID_BASED_MODE 2
 
 typedef struct
 {
@@ -69,14 +48,12 @@ typedef struct
     int distance;
 } PondDistance;
 
-
-struct ButtonState_t {
-  bool buttonReleased = true;
-  unsigned long buttonPressedMillis = 0;
-  bool buttonChanged = false;
+struct ButtonState_t
+{
+    bool buttonReleased = true;
+    unsigned long buttonPressedMillis = 0;
+    bool buttonChanged = false;
 };
-
-
 
 class cApplication
 {
@@ -89,18 +66,14 @@ private:
     bool m_bButtonPressed;
     bool GoToSmartConfig = false;
 
-    
-
     uint8_t currentScreen = 1;
     /*Functions*/
     void CheckForButtonEvent(void);
     time_t SendPing(void);
     void uploadframeFromBackUp(void);
     void updateJsonAndSendFrame(void);
-    void updateDeviceConfigFile(void);
     void staLEDHandler(void);
     void AppTimerHandler100ms(void);
-    void loadDeviceConfig(void);
     void inActivityChecker(void);
     void checkWifiConnection(void);
     void print_wakeup_reason(void);
@@ -108,7 +81,7 @@ private:
     void wifiInitialization(void);
     void convertTime(int offfsetinMins);
     void operateBuzzer(void);
-    uint8_t getConfigurationPondBoundaries(const char *pondID,const char *pName);
+    uint8_t getConfigurationPondBoundaries(const char *pondID, const char *pName);
     uint8_t getConfigurationDeviceId(void);
     void readDeviceConfig(void);
     void reconnectWifi(void);
@@ -123,15 +96,15 @@ private:
     void CheckAndSyncRTC(void);
     int mapFloatToInt(float x, float in_min, float in_max, int out_min, int out_max);
     void GetPondBoundaries(void);
-    String GetPondNameFromRFID(String pondLocationFromCard, const char* jsonString);
+    String GetPondNameFromRFID(String pondLocationFromCard, const char *jsonString);
     void GetCurrentPondName(void);
     void SmartConfig(void);
     String getAPSSIDFromMAC(void);
     void startAccessPoint(void);
     void startWebServer(void);
-    // to save teh nearest pond details
+    // to save the nearest pond details
     std::vector<PondDistance> nearestPonds;
-    void updateNearestPonds(const char* pondName, int distance);
+    void updateNearestPonds(const char *pondName, int distance);
     String getNearestPondString();
     void AssignDataToDisplayStructs();
     void ResetPondBackupStatusMap(int day, int hour);
@@ -140,7 +113,7 @@ public:
     uint8_t m_u8AppConter1Sec;
 
     ButtonEvent lastButtonEvent = BUTTON_NONE;
-    
+
     /*construct*/
     cApplication();
     /*Destruct*/
