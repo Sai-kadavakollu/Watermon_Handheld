@@ -52,7 +52,9 @@
     "set": "cpp",
     "cerrno": "cpp",
     "cfloat": "cpp",
-    "climits": "cpp"
+    "climits": "cpp",
+    "bitset": "cpp",
+    "regex": "cpp"
   },
   "C_Cpp_Runner.cCompilerPath": "gcc",
   "C_Cpp_Runner.cppCompilerPath": "g++",

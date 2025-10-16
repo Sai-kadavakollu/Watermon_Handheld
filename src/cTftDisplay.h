@@ -48,7 +48,7 @@
 #define SCREEN_HEIGHT 320 // was 320 (portrait)
 #define OREINTATION 0
 
-#define TIMER_COUNTDOWN 5
+#define TIMER_COUNTDOWN 60
 
 #define DARK_BG TFT_BLACK
 #define DARK_FG TFT_WHITE
@@ -136,12 +136,14 @@ public:
   void DisplaySmartConfig(String Myname, String MyPassKey);
   void DisplaySaveSmartConfig(String NewSsid, String NewPassword);
   void printFOTA(int progress);
+  void printSavingCoordinates(void);
 
   bool m_bSmartConfigMode = false;
   bool m_bResetServerFlag = false;
   bool m_bResetWifiFlag = false;
   bool StopReadingSensor = false;
   bool m_bSelectedReturnHome = false;
+  bool m_bRefreshRightPanel = false;
   uint8_t m_bCalibrationResponse = 2;
 
   leftPanel_t DisplayLeftPanelData;

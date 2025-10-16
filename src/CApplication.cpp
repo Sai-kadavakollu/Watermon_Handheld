@@ -7,7 +7,7 @@
 #include <WebServer.h>
 #include <DNSServer.h>
 
-// #define SERIAL_DEBUG
+#define SERIAL_DEBUG
 #ifdef SERIAL_DEBUG
 #define debugPrint(...) Serial.print(__VA_ARGS__)
 #define debugPrintln(...) Serial.println(__VA_ARGS__)
@@ -56,8 +56,6 @@ bool ResetEntireMap = false;
 bool pingNow = false;
 
 bool m_bDoFota = false;
-bool m_bGetPondLocation = false;
-bool m_bGotPondName = false;
 bool m_bGetPondDetails = false;
 bool FoundPondName = false;
 long ButtonPressedMillis;
@@ -88,7 +86,7 @@ bool EnterConfigRestart = false;
 time_t m_tPingEpoch = 0;
 
 int m_iTimeOutFrameCounter = 0;
-int TotalMinsOffSet = 330;
+int TotalMinsOffSet = 180;
 int buzz = 0;
 int m_iOperationMode = EVENT_BASED_MODE;
 int iNoActivityCounter = 0;
@@ -98,6 +96,8 @@ int rebootAfterOfflineCnt = 0;
 int m_iDataFrequencyInterval = 5;
 int m_iNetCheckCounter = 0;
 int CountDownTimer = 0;
+time_t LastPondNameCheckEpoch = 0;
+int LoadedPondsWhileCheckingCurrentPond = 0;
 
 float voltageValue = 0.0;
 float DoMglValue = 0.0;
@@ -111,10 +111,6 @@ char CurrntPondName[20];
 char CurrentLocationId[100];
 char CurrentPondID[100];
 float CurrentPondSalinity;
-
-char nearestPondName[10] = "";
-int nearestPondDistance = 0;
-bool isNearToSomePond = false;
 
 int lastMorningDay;
 int lastEveningDay;
@@ -397,7 +393,7 @@ static void RPChandler_getSalinity(struct jsonrpc_request *r)
     debugPrintln(buff);
 
     m_oSensor.getSalinity();
-    float salinity = m_oSensor.m_fSalinity; // Assuming m_oSensor.m_fSalinity is defined and holds the salinity value
+    float salinity = m_oSensor.m_fSalinity;
 
     jsonrpc_return_success(r, "{\"statusCode\":200,\"statusMsg\":\"Success.\",\"salinity\":\"%s.\"}", String(salinity));
     m_bSendframe = true;
@@ -411,7 +407,7 @@ static void RPChandler_getPressure(struct jsonrpc_request *r)
     debugPrintln(buff);
 
     m_oSensor.getPressure();
-    float pressure = m_oSensor.m_fPressure; // Assuming m_oSensor.m_fSalinity is defined and holds the salinity value
+    float pressure = m_oSensor.m_fPressure;
 
     jsonrpc_return_success(r, "{\"statusCode\":200,\"statusMsg\":\"Success.\",\"pressure\":\"%s.\"}", String(pressure));
 
@@ -500,7 +496,7 @@ static void RPChandler_whoAreYou(struct jsonrpc_request *r)
     doc["Wifissid"] = WiFi.SSID();
     doc["rssi"] = WiFi.RSSI();
     doc["lat"] = m_oGps.mPosition.m_lat;
-    doc["lng"] = m_oGps.mPosition.m_lng;
+    doc["long"] = m_oGps.mPosition.m_lng;
     doc["HDop"] = m_oGps.mPosition.hDop;
     doc["Satellite"] = m_oGps.mPosition.m_iSatellites;
     doc["CurrentPondName"] = CurrntPondName;
@@ -528,24 +524,14 @@ static void RPChandler_syncRTC(struct jsonrpc_request *r)
     jsonrpc_return_success(r, "{\"statusCode\":200,\"statusMsg\":\"success.\"}");
     m_bSendframe = true;
 }
-/**************************************************************
- *  RPC to get the CurrentPond
- ***************************************************************/
-static void RPChandler_getCurrentPondName(struct jsonrpc_request *r)
-{
-    debugPrintln(" get pond details to be activated");
-    m_bGetPondLocation = true;
-    m_bGotPondName = false;
-    jsonrpc_return_success(r, "{\"statusCode\":200,\"statusMsg\":\"success.\"}");
-    m_bSendframe = true;
-}
+
 
 /**************************************************************
  *  RPC to get the CurrentPond
  ***************************************************************/
 static void RPChandler_ResetPondStatus(struct jsonrpc_request *r)
 {
-    debugPrintln("Resetting pond status ");
+    Serial.println("Resetting pond status ");
     ResetEntireMap = true;
     jsonrpc_return_success(r, "{\"statusCode\":200,\"statusMsg\":\"success.\"}");
     m_bSendframe = true;
@@ -1085,7 +1071,6 @@ void allRpcInit(void)
     jsonrpc_export("setDataFrequency", RPChandler_setInterval);
     jsonrpc_export("writeTag", RPChandler_writeTag);
     jsonrpc_export("readTag", RPChandler_readTag);
-    jsonrpc_export("CurrentPond", RPChandler_getCurrentPondName);
     jsonrpc_export("ResetPondStatus", RPChandler_ResetPondStatus);
     jsonrpc_export("SetPondMapResetTime", RPChandler_SetPondMapResetTime);
     jsonrpc_export("ClearNonBackupFiles", RPChandler_ClearNonBackupFiles);
@@ -1279,61 +1264,6 @@ void IRAM_ATTR handleButtonInterrupt()
     }
 }
 
-// void cApplication::CheckForButtonEvent() {
-//     static bool isButtonPressed = false;
-//     if(isButtonPressed)
-//     {
-//         CountDownTimer = (millis() - ButtonPressedMillis) / 1000;
-//         m_oDisp.DisplayGeneralVariables.Counter = CountDownTimer;
-//     }
-//     debugPrintf(" CoutDown: %d \n", CountDownTimer);
-//     if(CountDownTimer >= TIMER_COUNTDOWN) {
-//         CountDownTimer = 0;
-//         isButtonPressed = false;
-//         buzz = 10;
-//         sendFrameType = VDIFF_FRAME;
-//         m_oDisp.PopUpDisplayData.UploadStatus = NO_FRAME_IN_PROCESS;
-//         debugPrintln("Generated Frame");
-//     }
-
-//     if (!ButtonState.buttonChanged || !ButtonState.buttonReleased)
-//         return;
-
-//     ButtonState.buttonChanged = false;
-
-//     unsigned long now = millis();
-//     unsigned long pressDuration = now - ButtonState.buttonPressedMillis;
-
-//     if (pressDuration < 2000) {
-//         lastButtonEvent = JUST_PRESSED;
-//     } else if (pressDuration > 2000) {
-//         lastButtonEvent = SHORT_PRESS_DETECTED;
-//     }
-//     else {
-//         lastButtonEvent = BUTTON_NONE;
-//     }
-
-//     debugPrint("Button Press Duration: ");
-//     debugPrint(pressDuration);
-//     debugPrint(" ms → Event: ");
-//     switch (lastButtonEvent) {
-//         case JUST_PRESSED: debugPrintln("JUST_PRESSED"); break;
-//         case SHORT_PRESS_DETECTED: debugPrintln("SHORT_PRESS_DETECTED"); break;
-//         default: debugPrintln("BUTTON_NONE"); break;
-//     }
-//     // Assign event to display system if needed
-//     m_oDisp.DisplayGeneralVariables.lastButtonEvent = lastButtonEvent;
-
-//     if(currentScreen == 1 && lastButtonEvent == JUST_PRESSED && !isButtonPressed)
-//     {
-//         isButtonPressed = true;
-//         buzz = 5;
-//         debugPrintln(" Button Pressed CountDown Start");
-//         m_oDisp.PopUpDisplayData.UploadStatus = 8;
-//         ButtonPressedMillis = millis();
-//     }
-// }
-
 void cApplication::CheckForButtonEvent()
 {
     static bool isButtonPressed = false;
@@ -1513,6 +1443,13 @@ time_t cApplication::SendPing(void)
     debugPrintln(frame);
     return m_oHttp.uploadPingFrame(frame);
 }
+void cApplication::updatePopUpDisplay(uint8_t uploadStatus, const char *timeStr, const char *pondName, float doValue)
+{
+    m_oDisp.PopUpDisplayData.UploadStatus = uploadStatus;
+    safeStrcpy(m_oDisp.PopUpDisplayData.time, timeStr, sizeof(m_oDisp.PopUpDisplayData.time));
+    safeStrcpy(m_oDisp.PopUpDisplayData.pName, pondName, sizeof(m_oDisp.PopUpDisplayData.pName));
+    m_oDisp.PopUpDisplayData.doValue = doValue;
+}
 
 /***********************************************************
  *   Send data from backup storage periodically if available
@@ -1554,26 +1491,17 @@ void cApplication::uploadframeFromBackUp(void)
             debugPrintln(Data);
             if (m_oHttp.uploadDataFrame(Data)) //
             {
-                m_oDisp.PopUpDisplayData.UploadStatus = BACKUP_FRAME_UPLOAD_SUCCESS;
-                safeStrcpy(m_oDisp.PopUpDisplayData.time, doc["timeBuffer"], sizeof(doc["timeBuffer"]));
-                safeStrcpy(m_oDisp.PopUpDisplayData.pName, doc["PondName"], sizeof(doc["PondName"]));
-                m_oDisp.PopUpDisplayData.doValue = doc["do"];
-                debugPrintln("[App][uploadFrameFromBackup][uploadDataFrame][Success]");
+                updatePopUpDisplay(BACKUP_FRAME_UPLOAD_SUCCESS, doc["timeBuffer"], doc["PondName"], doc["do"]);
                 m_oBackupStore.moveToNextFile(&m_oFileSystem);
 
-                if (doc["DataError"] != PONDMAP_VALUE_TAKEN_BUT_ERROR)
+                if (doc["DataError"] != PONDMAP_VALUE_TAKEN_BUT_ERROR && (doc["PondName"][0] != '\0'))
                 {
-                    m_oPondConfig.m_pondStatusMap[doc["PondName"]].PondDataStatus = PONDMAP_VALUE_FRAME_SENT_SUCESSFULLY;
-                    m_oPondConfig.savePondStatusToFile();
+                    m_oPondConfig.updatePondStatus(doc["PondName"], PONDMAP_VALUE_FRAME_SENT_SUCESSFULLY);
                 }
             }
             else
             {
-                debugPrintln("[App][uploadFrameFromBackup][uploadDataFrame][Fail]");
-                m_oDisp.PopUpDisplayData.UploadStatus = BACKUP_FRAME_UPLOAD_FAIL;
-                safeStrcpy(m_oDisp.PopUpDisplayData.time, doc["timeBuffer"], sizeof(doc["timeBuffer"]));
-                safeStrcpy(m_oDisp.PopUpDisplayData.pName, doc["PondName"], sizeof(doc["PondName"]));
-                m_oDisp.PopUpDisplayData.doValue = doc["do"];
+                updatePopUpDisplay(BACKUP_FRAME_UPLOAD_FAIL, doc["timeBuffer"], doc["PondName"], doc["do"]);
             }
         }
     }
@@ -1599,7 +1527,7 @@ void cApplication::updateJsonAndSendFrame(void)
         return;
     }
 
-    DynamicJsonDocument Data(1300);
+    DynamicJsonDocument Data(1400);
     /*****************************************************/
     Data["reasonForPacket"] = "T";
     if (sendFrameType == VDIFF_FRAME)
@@ -1623,7 +1551,7 @@ void cApplication::updateJsonAndSendFrame(void)
     Data["epoch"] = m_oConfig.m_tEpoch;
     Data["operationMode"] = m_iOperationMode;
     Data["lat"] = m_oGps.mPosition.m_lat;
-    Data["long"] = m_oGps.mPosition.m_lng;
+    Data["lng"] = m_oGps.mPosition.m_lng;
     Data["HDop"] = m_oGps.mPosition.hDop;
     Data["Satellites"] = m_oGps.mPosition.m_iSatellites;
     Data["rfId"] = "NO RFID";
@@ -1635,22 +1563,25 @@ void cApplication::updateJsonAndSendFrame(void)
     Data["temp"] = TempVal;
     Data["saturationPCT"] = roundToDecimals(DoSaturationVal, 5);
     Data["salinity"] = CurrentPondSalinity;
-    Data["voltage"] = voltageValue;
+    Data["BatPercent"] = m_oDisp.DisplayHeaderData.batteryPercentage;
     Data["isHistory"] = LIVE_FRAME;
-    // Data["isRtcSynced"] = 0;
+    Data["Nearest"] = getNearestPondString();
     Data["timeBuffer"] = timebuffer;
+    Data["UpTime"] = millis()/1000;
+    Data["LstPNameChkTime"] = LastPondNameCheckEpoch;
+    Data["PNameCheckingCntr"] = LoadedPondsWhileCheckingCurrentPond;
     /*****************************************************/
+
     /*CHeck Here whether the DO value have any error or not*/
-    if (Data["do"] <= 0 || (Data["temp"] <= 10 || Data["temp"] >= 55))
+    if ((Data["do"] <= 0 || (Data["temp"] <= 10 || Data["temp"] >= 55)) && (Data["PondName"][0] != '\0'))
     {
-        m_oPondConfig.m_pondStatusMap[CurrntPondName].PondDataStatus = PONDMAP_VALUE_TAKEN_BUT_ERROR;
-        m_oPondConfig.savePondStatusToFile();
+        m_oPondConfig.updatePondStatus(Data["PondName"], PONDMAP_VALUE_TAKEN_BUT_ERROR);
         Data["DataError"] = PONDMAP_VALUE_TAKEN_BUT_ERROR;
     }
 
     debugPrintln(" Document ready with data");
-    /*Try to send frame if device is online of save to backup memory*/
-    char frame[1300];
+    /*Try to send frame if device is online or save to backup memory*/
+    char frame[1400];
     if (isOnline)
     {
         serializeJson(Data, frame);
@@ -1661,49 +1592,36 @@ void cApplication::updateJsonAndSendFrame(void)
             serializeJson(Data, frame);
             m_oBackupStore.writeInBS(&m_oFileSystem, frame);
 
-            m_oDisp.PopUpDisplayData.UploadStatus = FRAME_UPLOAD_FAIL;
-            safeStrcpy(m_oDisp.PopUpDisplayData.time, Data["timeBuffer"], sizeof(Data["timeBuffer"]));
-            safeStrcpy(m_oDisp.PopUpDisplayData.pName, Data["PondName"], sizeof(Data["PondName"]));
-            m_oDisp.PopUpDisplayData.doValue = Data["do"];
-            debugPrintln("[App][updateJsonAndSendFrame][uploadDataFrame][Fail]");
-            if (Data["DataError"] != PONDMAP_VALUE_TAKEN_BUT_ERROR)
+            updatePopUpDisplay(FRAME_UPLOAD_FAIL, Data["timeBuffer"], Data["PondName"], Data["do"]);
+            if ((Data["DataError"] != PONDMAP_VALUE_TAKEN_BUT_ERROR) && (Data["PondName"][0] != '\0'))
             {
-                m_oPondConfig.m_pondStatusMap[Data["PondName"]].PondDataStatus = PONDMAP_VALUE_FRAME_STORED_TO_BACKUP;
-                m_oPondConfig.savePondStatusToFile();
+
+                m_oPondConfig.updatePondStatus(Data["PondName"], PONDMAP_VALUE_FRAME_STORED_TO_BACKUP);
             }
         }
         else
         {
-            m_oDisp.PopUpDisplayData.UploadStatus = FRAME_UPLOAD_SUCCESS;
-            safeStrcpy(m_oDisp.PopUpDisplayData.time, Data["timeBuffer"], sizeof(Data["timeBuffer"]));
-            safeStrcpy(m_oDisp.PopUpDisplayData.pName, Data["PondName"], sizeof(Data["PondName"]));
-            m_oDisp.PopUpDisplayData.doValue = Data["do"];
+            updatePopUpDisplay(FRAME_UPLOAD_SUCCESS, Data["timeBuffer"], Data["PondName"], Data["do"]);
             debugPrintln("[App][updateJsonAndSendFrame][uploadDataFrame][Success]");
-            if (Data["DataError"] != PONDMAP_VALUE_TAKEN_BUT_ERROR)
+            if (Data["DataError"] != PONDMAP_VALUE_TAKEN_BUT_ERROR && (Data["PondName"][0] != '\0'))
             {
-                m_oPondConfig.m_pondStatusMap[Data["PondName"]].PondDataStatus = PONDMAP_VALUE_FRAME_SENT_SUCESSFULLY;
-                m_oPondConfig.savePondStatusToFile();
+                m_oPondConfig.updatePondStatus(Data["PondName"], PONDMAP_VALUE_FRAME_SENT_SUCESSFULLY);
             }
         }
     }
     else
     {
-        m_oDisp.PopUpDisplayData.UploadStatus = FRAME_UPLOAD_FAIL_NO_INTERNET;
-        safeStrcpy(m_oDisp.PopUpDisplayData.time, Data["timeBuffer"], sizeof(Data["timeBuffer"]));
-        safeStrcpy(m_oDisp.PopUpDisplayData.pName, Data["PondName"], sizeof(Data["PondName"]));
-        m_oDisp.PopUpDisplayData.doValue = Data["do"];
-        debugPrintln("[App][updateJsonAndSendFrame][NO_INTERNET]");
-
         Data["isHistory"] = HISTORY_FRAME;
         serializeJson(Data, frame);
         m_oBackupStore.writeInBS(&m_oFileSystem, frame);
-        debugPrintf("\n!!!!!!!!!!!!!!!!!!!!!\n%d\n!!!!!!!!!!!!!!!!!!!!!!!!\n", m_oPondConfig.m_pondStatusMap[Data["PondName"]].PondDataStatus);
-        if (Data["DataError"] != PONDMAP_VALUE_TAKEN_BUT_ERROR)
+
+        updatePopUpDisplay(FRAME_UPLOAD_FAIL_NO_INTERNET, Data["timeBuffer"], Data["PondName"], Data["do"]);
+        if ((Data["DataError"] != PONDMAP_VALUE_TAKEN_BUT_ERROR) && (Data["PondName"][0] != '\0'))
         {
-            m_oPondConfig.m_pondStatusMap[Data["PondName"]].PondDataStatus = PONDMAP_VALUE_FRAME_STORED_TO_BACKUP;
-            m_oPondConfig.savePondStatusToFile();
+            m_oPondConfig.updatePondStatus(Data["PondName"], PONDMAP_VALUE_FRAME_STORED_TO_BACKUP);
         }
     }
+
     sendFrameType = NO_FRAME;
     /*Reset Timeout frame counter, Push Timeout Frame*/
     m_iFrameInProcess = NO_FRAME;
@@ -1854,7 +1772,7 @@ void cApplication::ResetPondBackupStatusMap(int day, int hour)
         debugPrintln(" Resetting the ponds status as time is 2AM");
         ResetEntireMap = true;
     }
-    // Evening task (4:00 PM)
+    // Evening task (2:00 PM)
     if (!eveningCheckedThisBoot && TimeInHoursWithOffset >= EveningPondMapResetTime && (day != lastEveningDay))
     {
         m_oMemory.putInt("eveDay", day);
@@ -1920,36 +1838,26 @@ void cApplication::applicationTask(void)
             // for (const auto &pair : m_oPondConfig.m_pondStatusMap) {
             //     Serial.printf("Pond: %s, isBoundariesAvailable: %d, BackupState: %d\n", pair.first.c_str(), pair.second.isBoundariesAvailable,pair.second.PondDataStatus);
             // }
-            m_bGetPondLocation = true;
+
             long st = millis();
-            /*check for the pond location*/
             GetCurrentPondName();
-            debugPrint(" TIme taken to get all the ponds data: ");
-            debugPrintln(millis() - st);
-            m_bGotPondName = false;
+            LastPondNameCheckEpoch = m_oConfig.m_tEpoch;
+            debugPrint(" TIme taken to get all the ponds data: ");debugPrintln(millis() - st);
             sec5timer = 0;
+            Serial.print(" Nearest Ponds: ");Serial.println(getNearestPondString());
         }
-        /* Run the GPS function very second to encode lats, longs */
-        m_oGps.gpstask();
 
         m_u8AppConter1Sec = 0;
         m_iTimeOutFrameCounter++;
 
-        if (m_bGetConfig && isOnline && m_oHttp.m_bIsConnected)
-        {
-            Serial.println(" Getting configuration initially");
-            getConfigurationDeviceId();
-        }
-
         checkBattteryVoltage();
         GetPondBoundaries();
 
-        if (m_iOperationMode == EVENT_BASED_MODE)
-            rfidTask(); // rfid read and write the card data
+        // if (m_iOperationMode == EVENT_BASED_MODE)
+        //     rfidTask(); // rfid read and write the card data
         /*Read Time from GPS*/
         if (!Is_Simulated_Lat_Longs)
             m_oConfig.m_tEpoch = m_oGps.Epoch;
-        // m_iRtcSyncCounter++;
         if ((isOnline == false) || (m_oHttp.m_bIsConnected == false))
         {
             rebootAfterOfflineCnt++;
@@ -1966,11 +1874,18 @@ void cApplication::applicationTask(void)
         /*Reset the entire map*/
         if (ResetEntireMap)
         {
+            Serial.println("[DEBUG] ResetEntireMap flag detected → resetting...");
             ResetEntireMap = false;
             m_oPondConfig.resetAllPondDataStatus();
         }
     }
     ResetHandler();
+}
+
+void cApplication::GpsTask(void)
+{
+    /* Run the GPS function very second to encode lats, longs */
+    m_oGps.gpstask();
 }
 
 /*****************************************************************************************************
@@ -1980,75 +1895,34 @@ void cApplication::applicationTask(void)
  ******************************************************************************************************/
 void cApplication::GetCurrentPondName(void)
 {
-    if (m_bGetPondLocation)
+    int cntr = 0;
+    allPondsWithDistance.clear();
+    /*set the current location coordinates*/
+    if (Is_Simulated_Lat_Longs)
     {
-        nearestPonds.clear();
-        /*set the current location coordinates*/
-        if (Is_Simulated_Lat_Longs)
-        {
-            m_oGps.mPosition.m_lat = SimulatedLat;
-            m_oGps.mPosition.m_lng = SimulatedLongs;
-        }
-
-        m_oPosition location = {m_oGps.mPosition.m_lat, m_oGps.mPosition.m_lng};
-        debugPrintf("lat: %f, lng : %f\n", location.m_lat, location.m_lng);
-        int len = m_oPondConfig.m_u8TotalNoOfPonds;
-        debugPrintf("location versions size : %d \n", len);
-        /*read the data from the locationID file*/
-        for (int i = 0; i < len; i++)
-        {
-            char fileName[20] = "";
-            snprintf(fileName, sizeof(fileName), "/%s.txt", m_oPondConfig.m_oPondList[i].m_cPondname);
-            debugPrintf("Current FileName to check distance: %s\n", fileName); // NOTE: [GEOFENCE DISTANCE]uncomment to set distance
-            /*If distance btw our coords and pond boundaries < 1, this below func return 1 so we read the pondName from the pondConfig*/
-            int inPond = readPondNameFromFile(fileName, location);
-            if (inPond == 1)
-            {
-                safeStrcpy(m_oPondConfig.m_cCurrentPondname, m_oPondConfig.m_oPondList[i].m_cPondname, sizeof(m_oPondConfig.m_cCurrentPondname));
-                safeStrcpy(m_oPondConfig.m_u64currentPondId, m_oPondConfig.m_oPondList[i].m_cPondId, sizeof(m_oPondConfig.m_u64currentPondId));
-                safeStrcpy(m_oPondConfig.m_cLocationId, m_oPondConfig.m_oPondList[i].m_cLocationID, sizeof(m_oPondConfig.m_cLocationId));
-                m_oSensor.m_fSalinity = m_oPondConfig.m_oPondList[i].m_iSalinity;
-                debugPrintf("got salinity value %f\n", m_oSensor.m_fSalinity);
-                CurrentPondSalinity = m_oSensor.m_fSalinity;
-                m_bGotPondName = true;
-                debugPrint(" Current PondName: ");
-                debugPrintln(m_oPondConfig.m_cCurrentPondname);
-                if (m_oSensor.m_fSalinity)
-                {
-                    int val = m_oSensor.setSalinity();
-                    if (!val)
-                        m_oSensor.setSalinity();
-                }
-                break;
-            }
-            else if (inPond >= 2)
-            {
-                updateNearestPonds(m_oPondConfig.m_oPondList[i].m_cPondname, inPond);
-                strcpy(nearestPondName, m_oPondConfig.m_oPondList[i].m_cPondname);
-                nearestPondDistance = inPond;
-                isNearToSomePond = true;
-                debugPrintf(" NearestPondDistance: %d , nearestPondName: %s \n", nearestPondDistance, nearestPondName);
-            }
-            else
-            {
-                isNearToSomePond = false;
-                debugPrintln(" No nearest ponds avaialble for this coordinates");
-            }
-        }
-        if (!m_bGotPondName)
-        {
-            strcpy(m_oPondConfig.m_cCurrentPondname, "");
-            strcpy(m_oPondConfig.m_u64currentPondId, "");
-            strcpy(m_oPondConfig.m_cLocationId, "");
-            debugPrintln("There is No pond for the current coordinates");
-        }
-        strcpy(CurrntPondName, m_oPondConfig.m_cCurrentPondname);
-        strcpy(CurrentLocationId, m_oPondConfig.m_cLocationId);
-        strcpy(CurrentPondID, m_oPondConfig.m_u64currentPondId);
-
-        /*get the pond location using the posts*/
-        m_bGetPondLocation = false; /*after getting the pond location */
+        m_oGps.mPosition.m_lat = SimulatedLat;
+        m_oGps.mPosition.m_lng = SimulatedLongs;
     }
+
+    m_oPosition location = {m_oGps.mPosition.m_lat, m_oGps.mPosition.m_lng};
+    debugPrintf("lat: %f, lng : %f\n", location.m_lat, location.m_lng);
+    int len = m_oPondConfig.m_u8TotalNoOfPonds;
+    debugPrintf("location versions size : %d \n", len);
+    /*read the data from the locationID file*/
+    for (int i = 0; i < len; i++)
+    {
+        char fileName[20] = "";
+        snprintf(fileName, sizeof(fileName), "/%s.txt", m_oPondConfig.m_oPondList[i].m_cPondname);
+        debugPrintf("Current FileName to check distance: %s\n", fileName);
+        int distanceFromNearestPond = readPondNameFromFile(fileName, location);
+        if(distanceFromNearestPond >= 0)
+        {
+            cntr++;
+            updateAllPondsDistance(m_oPondConfig.m_oPondList[i].m_cPondname, distanceFromNearestPond);
+        }
+    }
+    finalizeNearestPonds();
+    LoadedPondsWhileCheckingCurrentPond = cntr;
 }
 /*********************************************************************************************
  * Get the pond name from RFID tag data
@@ -2102,10 +1976,12 @@ void cApplication::GetPondBoundaries(void)
         int length = m_oPondConfig.updatedPondIds.size();
         if (!length)
             m_oPondConfig.m_bGetPondBoundaries = false;
+
         for (auto it = m_oPondConfig.updatedPondIds.begin(); it != m_oPondConfig.updatedPondIds.end(); /* no increment here */)
         {
             debugPrintf("PondId: %s, PondName: %s\n", it->first.c_str(), it->second.c_str());
             int response = getConfigurationPondBoundaries(it->first.c_str(), it->second.c_str());
+            m_oDisp.printSavingCoordinates();
             if (response)
             {
                 m_oPondConfig.m_pondStatusMap[it->second.c_str()].isBoundariesAvailable = AVAILABLE;
@@ -2119,6 +1995,7 @@ void cApplication::GetPondBoundaries(void)
                 ++it;
             }
         }
+        m_oDisp.m_bRefreshRightPanel = true;
         m_oPondConfig.savePondStatusToFile();
     }
 }
@@ -2144,6 +2021,10 @@ void cApplication::AssignDataToDisplayStructs()
     safeStrcpy(m_oDisp.DisplayLeftPanelData.nearestPonds, String(getNearestPondString()).c_str(), sizeof(m_oDisp.DisplayLeftPanelData.nearestPonds));
     m_oDisp.DisplayHeaderData.Satellites = m_oGps.mPosition.m_iSatellites;
     m_oDisp.DisplayHeaderData.rssi = WiFi.RSSI();
+    /* Check whether the GPS Coordinates are found or not*/
+    m_bIsGPS = ((m_oGps.mPosition.m_lat != 0.0) && (m_oGps.mPosition.m_lng != 0.0)) ? true : false;
+    if (Is_Simulated_Lat_Longs)
+        m_bIsGPS = ((SimulatedLat != 0.0) && (SimulatedLongs != 0.0)) ? true : false;
     m_oDisp.DisplayHeaderData.LocationStatus = m_bIsGPS;
     m_oDisp.DisplayFooterData.isHttpConnected = m_oHttp.m_bIsConnected;
     /*Footer Data*/
@@ -2157,10 +2038,7 @@ void cApplication::AssignDataToDisplayStructs()
 void cApplication::RunDisplay(void)
 {
     AssignDataToDisplayStructs();
-    /* Check whether the GPS Coordinates are found or not*/
-    m_bIsGPS = ((m_oGps.mPosition.m_lat != 0.0) && (m_oGps.mPosition.m_lng != 0.0)) ? true : false;
-    if (Is_Simulated_Lat_Longs)
-        m_bIsGPS = ((SimulatedLat != 0.0) && (SimulatedLongs != 0.0)) ? true : false;
+
     unsigned long st = millis();
     m_oDisp.renderDisplay(currentScreen, &m_oPondConfig);
     // Serial.print(" Unsigned : ");
@@ -2263,7 +2141,7 @@ void cApplication::commandParseTask(void)
     // Reset working values when sensor has been disconnected for too long, this prevents loss of valid data due to temporary communication issues
     if (sensorFailCntr >= 5)
     {
-        Serial.println(" [App][commandParseTask] Sensor disconnected - resetting working values");
+        debugPrintln(" [App][commandParseTask] Sensor disconnected - resetting working values");
         m_oDisp.DisplayGeneralVariables.IsSensorConnected = true;
         TempVal = m_oDisp.DisplayLeftPanelData.TempValue = 0.0;
         DoSaturationVal = m_oDisp.DisplayLeftPanelData.DoSaturationValue = 0;
@@ -2277,69 +2155,146 @@ void cApplication::commandParseTask(void)
     }
 }
 
-void cApplication::updateNearestPonds(const char *pondName, int distance)
+// -----------------------------------------------------
+// Function: updateAllPondsDistance
+// Purpose : Add each pond’s distance to the list
+// -----------------------------------------------------
+void cApplication::updateAllPondsDistance(const char *pondName, int distance)
 {
-    if (distance < 2 || distance > NEAREST_POND_MAX_VALUE)
+    if (distance < 0.0f || distance > NEAREST_POND_MAX_VALUE)
         return;
 
-    // Check if the pond already exists, update if found
-    for (auto &pond : nearestPonds)
-    {
-        if (strcmp(pond.name, pondName) == 0)
-        {
-            pond.distance = distance;
-            goto sort;
-        }
-    }
+    PondDistance p;
+    strncpy(p.name, pondName, sizeof(p.name));
+    p.name[sizeof(p.name) - 1] = '\0';
+    p.distance = distance;
 
-    // Add if less than 2 ponds
-    if (nearestPonds.size() < MAX_NEAREST_PONDS)
+    allPondsWithDistance.push_back(p);
+}
+
+// -----------------------------------------------------
+// Purpose : Sort ponds and detect current pond (if distance is less than the Inside the pond tolerance value)
+// -----------------------------------------------------
+void cApplication::finalizeNearestPonds()
+{
+    if (allPondsWithDistance.empty())
+        return;
+
+    // Sort by ascending distance
+    std::sort(allPondsWithDistance.begin(), allPondsWithDistance.end(),
+              [](const PondDistance &a, const PondDistance &b)
+              { return a.distance < b.distance; });
+
+    // Check if the device is inside a pond
+    if (allPondsWithDistance[0].distance <= INSIDE_POND_TOLERANCE)
     {
-        PondDistance newPond;
-        strncpy(newPond.name, pondName, sizeof(newPond.name));
-        newPond.distance = distance;
-        nearestPonds.push_back(newPond);
+        strncpy(CurrntPondName, allPondsWithDistance[0].name, sizeof(CurrntPondName));
+        Serial.print("Current Pond Name: "); Serial.println(CurrntPondName);
+        CurrntPondName[sizeof(CurrntPondName) - 1] = '\0';
+
+        for (int j = 0; j < m_oPondConfig.m_u8TotalNoOfPonds; j++)
+        {
+            if (strcmp(m_oPondConfig.m_oPondList[j].m_cPondname, CurrntPondName) == 0)
+            {
+                // Found the pond — copy details
+                strcpy(CurrentPondID, m_oPondConfig.m_oPondList[j].m_cPondId);
+                strcpy(CurrentLocationId, m_oPondConfig.m_oPondList[j].m_cLocationID);
+                m_oSensor.m_fSalinity = CurrentPondSalinity = m_oPondConfig.m_oPondList[j].m_iSalinity;
+            }
+        }
+        if (m_oSensor.m_fSalinity)
+        {
+            int val = m_oSensor.setSalinity();
+            if (!val)
+                m_oSensor.setSalinity();
+        }
     }
     else
     {
-        // Replace farthest if new is closer
-        auto maxIt = std::max_element(nearestPonds.begin(), nearestPonds.end(),
-                                      [](const PondDistance &a, const PondDistance &b)
-                                      { return a.distance < b.distance; });
-
-        if (maxIt != nearestPonds.end() && distance < maxIt->distance)
-        {
-            strncpy(maxIt->name, pondName, sizeof(maxIt->name));
-            maxIt->distance = distance;
-        }
+        CurrntPondName[0] = '\0';
+        strcpy(CurrntPondName, "");
+        strcpy(CurrentLocationId, "");
+        strcpy(CurrentPondID, "");
+        m_oSensor.m_fSalinity = CurrentPondSalinity = 0;
+        debugPrintln("There is No pond for the current coordinates");
     }
 
-sort:
-    std::sort(nearestPonds.begin(), nearestPonds.end(),
-              [](const PondDistance &a, const PondDistance &b)
-              { return a.distance < b.distance; });
+    // Keep only the N nearest ponds (optional trimming)
+    if (allPondsWithDistance.size() > MAX_NEAREST_PONDS)
+        allPondsWithDistance.resize(MAX_NEAREST_PONDS);
+
+    // Debug print all ponds after sorting
+    // printAllPondsSorted();
 }
 
+// -----------------------------------------------------
+// Function: printAllPondsSorted
+// Purpose : Debug helper - prints all ponds & distances
+// -----------------------------------------------------
+void cApplication::printAllPondsSorted()
+{
+    Serial.println("\n--- Sorted Pond Distances ---");
+    for (size_t i = 0; i < allPondsWithDistance.size(); ++i)
+    {
+        Serial.print(i);
+        Serial.print(": ");
+        Serial.print(allPondsWithDistance[i].name);
+        Serial.print(" -> ");
+        Serial.print(allPondsWithDistance[i].distance, 3);
+        Serial.println(" m");
+    }
+    Serial.println("-----------------------------\n");
+}
+
+// -----------------------------------------------------
+// Function: getNearestPondString
+// Purpose : Create a user-readable message
+// -----------------------------------------------------
 String cApplication::getNearestPondString()
 {
-    if (strcmp(CurrntPondName, "") && nearestPonds.empty())
-        return "Inside the Pond";
-    else if (nearestPonds.empty())
+    if (allPondsWithDistance.empty())
         return "No Ponds in range";
 
-    String msg = "Near to ";
-    for (size_t i = 0; i < nearestPonds.size(); ++i)
+    // Case 1: Inside a pond
+    if (strlen(CurrntPondName) > 0)
     {
-        char temp[20];
-        snprintf(temp, sizeof(temp), "%s-%dm", nearestPonds[i].name, nearestPonds[i].distance);
-        msg += temp;
-        if (i < nearestPonds.size() - 1)
+        String msg;
+
+        // Find next two nearest ponds (if available)
+        if (allPondsWithDistance.size() > 1)
+        {
+            msg += "Near to ";
+
+            size_t limit = min((size_t)MAX_NEAREST_PONDS, allPondsWithDistance.size());
+            for (size_t i = 1; i < limit; ++i)
+            {
+                msg += allPondsWithDistance[i].name;
+                msg += "(";
+                msg += String(allPondsWithDistance[i].distance);
+                msg += "m)";
+                if (i < limit - 1)
+                    msg += ", ";
+            }
+        }
+        return msg;
+    }
+
+    // Case 2: Not inside any pond
+    String msg = "Near to ";
+    size_t limit = min((size_t)MAX_NEAREST_PONDS - 1, allPondsWithDistance.size());
+    for (size_t i = 0; i < limit; ++i)
+    {
+        msg += allPondsWithDistance[i].name;
+        msg += "(";
+        msg += String(allPondsWithDistance[i].distance);
+        msg += "m)";
+        if (i < limit - 1)
             msg += ", ";
     }
 
-    // debugPrintln(msg);
     return msg;
 }
+
 /****************************************************************************************************
  * Function to read pond name from file
  ****************************************************************************************************/
@@ -2374,16 +2329,7 @@ int cApplication::readPondNameFromFile(const char *path, m_oPosition data)
                         /*Geo fencing*/
                         double value = m_oGeofence.isBotInsideGeofence(m_aPosts, length, data);
                         debugPrintf("value = %f\n", value);
-                        /*If the distance form our coords and pond boundary is less than 1 tehn return 1*/
-                        if (value < 2)
-                        {
-                            return 1;
-                        }
-                        else if (value >= 2 && value <= NEAREST_POND_MAX_VALUE)
-                        {
-                            int dist = (int)value;
-                            return dist;
-                        }
+                        return value;
                     }
                 }
                 else
@@ -2405,7 +2351,7 @@ int cApplication::readPondNameFromFile(const char *path, m_oPosition data)
     {
         debugPrintln("[App][ReadPNameFromFile]: File reading failed..");
     }
-    return 0;
+    return -1;
 }
 
 /*********************************************************
@@ -2455,6 +2401,7 @@ void cApplication::frameHandlingTask(void)
     }
     checkWifiConnection();
 
+    debugPrint("  m_iFrameInProcess:   ");debugPrint(m_iFrameInProcess);debugPrint("   sendFrameType:   ");debugPrintln(sendFrameType);
     /*Update and send frame*/
     if ((m_iFrameInProcess == NO_FRAME) && (sendFrameType != NO_FRAME))
     {
@@ -2463,7 +2410,7 @@ void cApplication::frameHandlingTask(void)
     }
     m_oBsp.wdtfeed();
 
-    /*Check for multiple Wifi Networks when device is offline every 30sec*/
+    /*Check for multiple Wifi Networks when device is offline every 15sec*/
     if (m_iNetCheckCounter > 15)
     {
         m_iNetCheckCounter = 0;
@@ -2486,11 +2433,17 @@ void cApplication::frameHandlingTask(void)
         uploadframeFromBackUp();
     }
 
-    if (m_iTimeOutFrameCounter > 5 * 60 && sendFrameType == NO_FRAME && strcmp(CurrentPondID, "") == 1)
+    if (m_iTimeOutFrameCounter > 5 * 60 && sendFrameType == NO_FRAME && strcmp(CurrentPondID, "") == 0)
     {
         debugPrintln("@ generating T T T frame");
         m_iTimeOutFrameCounter = 0;
         sendFrameType = TOUT_FRAME;
+    }
+
+    if (m_bGetConfig && isOnline && m_oHttp.m_bIsConnected)
+    {
+        Serial.println(" Getting configuration initially");
+        getConfigurationDeviceId();
     }
 }
 
@@ -2623,7 +2576,7 @@ uint8_t cApplication::getConfigurationDeviceId(void)
     uint8_t ret = 0;
     char deviceid[256];
     String macAdress = WiFi.macAddress();
-    // String macAdress = "90:15:06:E4:47:44";
+    // String macAdress = "10:06:1C:07:D9:F4";//WARNING
     sprintf(deviceid, "deviceId=%s", String(macAdress).c_str());
     if (m_oHttp.getConfig(deviceid))
     {
@@ -2663,32 +2616,36 @@ uint8_t cApplication::getConfigurationDeviceId(void)
                 check for the operation mode in the payload
                 if it is EventBasedMode, load the FILE of EventMode config and check for the version
             ************************************************************************************************/
-            if (m_iOperationMode == EVENT_BASED_MODE)
+            if (configInfo.containsKey("version"))
             {
-
-                if (configInfo.containsKey("version"))
+                iVersionInFrame = configInfo["version"];
+                debugPrintln("EVENT: Obtained Version from payload");
+            }
+            Serial.print("   Version from payload:   ");
+            Serial.print(iVersionInFrame);
+            Serial.print("   Version from Saved File:   ");
+            Serial.println(m_oPondConfig.m_i64ConfigIdsVersion);
+            if (iVersionInFrame != m_oPondConfig.m_i64ConfigIdsVersion)
+            {
+                /*write to file when version changes*/
+                Serial.printf(" Response data length : %d \n", responseData.length());
+                if (responseData.length() > 2500)
                 {
-                    iVersionInFrame = configInfo["version"];
-                    debugPrintln("EVENT: Obtained Version from payload");
+                    return 0;
                 }
-                if (iVersionInFrame != m_oPondConfig.m_i64ConfigIdsVersion)
-                {
-                    /*write to file when version changes*/
-                    Serial.printf(" Response data length : %d \n", responseData.length());
-                    if (responseData.length() > 2500)
-                    {
-                        return 0;
-                    }
-                    m_oBackupStore.clearNonBackupFiles(&m_oFileSystem);
-                    m_oFileSystem.writeFile(FILENAME_IDSCONFIG, String(responseData).c_str());
-                    debugPrintln("@@ file saved in file");
-                    /*Clear the existing pond status map file in the Filesystem*/
-                    SPIFFS.remove(PONDS_STATUS_CONFIG);
-                    m_oPondConfig.m_pondStatusMap.clear();
-                    /*load location ids from file*/
-                    m_oPondConfig.loadPondConfig();
-                    debugPrintln("@@ location ids loaded from file here");
-                }
+                m_oBackupStore.clearNonBackupFiles(&m_oFileSystem);
+                m_oFileSystem.writeFile(FILENAME_IDSCONFIG, String(responseData).c_str());
+                debugPrintln("@@ file saved in file");
+                /*Clear the existing pond status map file in the Filesystem*/
+                SPIFFS.remove(PONDS_STATUS_CONFIG);
+                m_oPondConfig.m_pondStatusMap.clear();
+                /*load location ids from file*/
+                m_oPondConfig.loadPondConfig();
+                debugPrintln("@@ location ids loaded from file here");
+            }
+            else
+            {
+                Serial.println(" Version not changed...");
             }
             m_bGetConfig = false;
         }
@@ -2761,10 +2718,10 @@ uint8_t cApplication::getConfigurationPondBoundaries(const char *pondID, const c
  ***************************************************************/
 void cApplication::readDeviceConfig(void)
 {
-    String sWifiSSID = m_oMemory.getString("wifiSsid", "Sai");                     // get wifi SSID
+    String sWifiSSID = m_oMemory.getString("wifiSsid", "Nextaqua_EAP110");         // get wifi SSID
     String sWifiPASS = m_oMemory.getString("wifiPass", "Infi@2016");               // get wifi password
     String sSeverIP = m_oMemory.getString("serverIP", m_oHttp.m_cDefaultServerIP); // get server IP
-    TotalMinsOffSet = m_oMemory.getInt("LocalMins", 330);                          // get offset time
+    TotalMinsOffSet = m_oMemory.getInt("LocalMins", 180);                          // get offset time
     m_iDataFrequencyInterval = m_oMemory.getInt("interval", 5);                    // To post the data that frequently
 
     safeStrcpy(m_cWifiPass, sWifiPASS.c_str(), sizeof(m_cWifiPass));
@@ -2886,7 +2843,6 @@ int cApplication::appInit(void)
 
     char mac_id[20] = {0};
     String macID = WiFi.macAddress();
-    // String macID = "90:15:06:E4:47:44";
     safeStrcpy(mac_id, String(macID).c_str(), sizeof(mac_id));
     char FV[10];
     String firmVersion = String(FW_VERSION) + "." + String(BOARD_VERSION) + "." + "0";
@@ -2909,7 +2865,7 @@ int cApplication::appInit(void)
         currentScreen = 1;
         m_oDisp.ClearDisplay();
     }
-    // listSPIFFSFiles();
+    listSPIFFSFiles();
     attachInterrupt(digitalPinToInterrupt(BSP_BTN_1), handleButtonInterrupt, CHANGE);
     debugPrint("millis before the button detection ");
     debugPrintln(millis());

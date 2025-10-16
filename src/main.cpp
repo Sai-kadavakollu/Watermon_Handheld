@@ -14,9 +14,9 @@
 #define debugPrintlnf(...) // blank line
 #endif
 
-TaskHandle_t Task1;
-TaskHandle_t Task2;
-TaskHandle_t Task3;
+TaskHandle_t frameHandlingTaskHandler;
+TaskHandle_t applicationTaskHandler;
+TaskHandle_t commandParseTaskHandler;
 TaskHandle_t OtaTaskHandler;
 TaskHandle_t SmartConfigHandler;
 
@@ -49,9 +49,9 @@ void Task2code(void *pvParameters)
 void printTaskStacks()
 {
   Serial.println("---- Task Stack Usage ----");
-  Serial.printf("Frame       : %u words free\n", uxTaskGetStackHighWaterMark(Task1));
-  Serial.printf("App         : %u words free\n", uxTaskGetStackHighWaterMark(Task2));
-  Serial.printf("Modbus      : %u words free\n", uxTaskGetStackHighWaterMark(Task3));
+  Serial.printf("Frame       : %u words free\n", uxTaskGetStackHighWaterMark(frameHandlingTaskHandler));
+  Serial.printf("App         : %u words free\n", uxTaskGetStackHighWaterMark(applicationTaskHandler));
+  Serial.printf("Modbus      : %u words free\n", uxTaskGetStackHighWaterMark(commandParseTaskHandler));
   Serial.printf("OTA         : %u words free\n", uxTaskGetStackHighWaterMark(OtaTaskHandler));
   Serial.printf("SmartConfig : %u words free\n", uxTaskGetStackHighWaterMark(SmartConfigHandler));
   Serial.println("--------------------------");
@@ -65,11 +65,6 @@ void Task3code(void *pvParameters)
   for (;;)
   {
     App.commandParseTask();
-    // static uint32_t lastCheck = 0;
-    // if (millis() - lastCheck > 5000) {
-    // printTaskStacks();
-    //   lastCheck = millis();
-    // }
     vTaskDelay(1000 / portTICK_PERIOD_MS);
   }
 }
@@ -92,8 +87,9 @@ void Task5code(void *pvParameters)
 {
   for (;;)
   {
+    App.GpsTask();
     App.SmartConfigTask();
-    vTaskDelay(10 / portTICK_PERIOD_MS);
+    vTaskDelay(100 / portTICK_PERIOD_MS);
   }
 }
 
@@ -109,7 +105,7 @@ void CreateTasks(int Value)
       18000,                        /* Stack size of task */
       NULL,                         /* parameter of the task */
       2,                            /* priority of the task */
-      &Task1,                       /* Task handle to keep track of created task */
+      &frameHandlingTaskHandler,                       /* Task handle to keep track of created task */
       CONFIG_ARDUINO_RUNNING_CORE); /* pin task to core 1 */
   delay(500);
 
@@ -120,7 +116,7 @@ void CreateTasks(int Value)
       20000,                        /* Stack size of task */
       NULL,                         /* parameter of the task */
       3,                            /* priority of the task */
-      &Task2,                       /* Task handle to keep track of created task */
+      &applicationTaskHandler,                       /* Task handle to keep track of created task */
       CONFIG_ARDUINO_RUNNING_CORE); /* pin task to core 1 */
   delay(500);
 
@@ -131,7 +127,7 @@ void CreateTasks(int Value)
       10000,     /* Stack size of task */
       NULL,      /* parameter of the task */
       1,         /* priority of the task */
-      &Task3,    /* Task handle to keep track of created task */
+      &commandParseTaskHandler,    /* Task handle to keep track of created task */
       0);        /* pin task to core 0 */
   delay(500);
 
@@ -143,7 +139,7 @@ void CreateTasks(int Value)
       NULL,            /* parameter of the task */
       4,               /* priority of the task */
       &OtaTaskHandler, /* Task handle to keep track of created task */
-      1);              /* pin task to core 1 */
+      CONFIG_ARDUINO_RUNNING_CORE);              /* pin task to core 1 */
   delay(500);
   // create a task that will be executed in the Task1code() function, with priority 1 and executed on core 0
   xTaskCreatePinnedToCore(
@@ -168,8 +164,12 @@ void setup()
   if (retValue)
   {
     CreateTasks(retValue);
-    App.AppWatchdogInit(&Task1, &Task2, &Task3, &OtaTaskHandler, &SmartConfigHandler);
+    App.AppWatchdogInit(&frameHandlingTaskHandler, &applicationTaskHandler, &commandParseTaskHandler, &OtaTaskHandler, &SmartConfigHandler);
     debugPrintln("Total 5 Watchdog Init.....");
+  }
+  else
+  {
+    //Safe Mode
   }
 }
 

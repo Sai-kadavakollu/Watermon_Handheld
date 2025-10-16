@@ -4,7 +4,7 @@
 #define TOSTR(x) #x
 #define STRINGIFY(x) TOSTR(x)
 
-#define FW_VERSION 26
+#define FW_VERSION 31
 #define BOARD_VERSION 5
 #define DEVICE_TYPE "DO"
 
@@ -22,8 +22,9 @@
 #include "CDoSensor.h"
 #include "cPN532.h"
 
-#define MAX_NEAREST_PONDS 2
+#define MAX_NEAREST_PONDS 3
 #define NEAREST_POND_MAX_VALUE 1500
+#define INSIDE_POND_TOLERANCE 6
 
 #define NO_FRAME 0
 #define TOUT_FRAME 1
@@ -103,11 +104,14 @@ private:
     void startAccessPoint(void);
     void startWebServer(void);
     // to save the nearest pond details
-    std::vector<PondDistance> nearestPonds;
-    void updateNearestPonds(const char *pondName, int distance);
+    std::vector<PondDistance> allPondsWithDistance;
+    void updateAllPondsDistance(const char *pondName, int distance);
+    void finalizeNearestPonds();
     String getNearestPondString();
     void AssignDataToDisplayStructs();
     void ResetPondBackupStatusMap(int day, int hour);
+    void printAllPondsSorted(void);
+    void updatePopUpDisplay(uint8_t uploadStatus, const char* timeStr, const char* pondName, float doValue);
 
 public:
     uint8_t m_u8AppConter1Sec;
@@ -125,6 +129,7 @@ public:
     void frameHandlingTask(void);
     void commandParseTask(void);
     void fotaTask(void);
+    void GpsTask(void);
     void SmartConfigTask(void);
     void AppWatchdogInit(TaskHandle_t *taskhandle1, TaskHandle_t *taskhandle2);
     void AppWatchdogInit(TaskHandle_t *taskhandle1, TaskHandle_t *taskhandle2, TaskHandle_t *taskhandle3);

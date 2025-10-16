@@ -36,7 +36,7 @@ cBsp::~cBsp()
 void cBsp::hooterInit()
 {
   pinMode(BUZZER_PIN, OUTPUT);
-  digitalWrite(BUZZER_PIN, HIGH);
+  hooterOff();
 }
 
 void cBsp::hooterOn()

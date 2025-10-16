@@ -284,6 +284,7 @@ int CBackupStorage::clearNonBackupFiles(FILESYSTEM *fileSystem)
         }
         file = root.openNextFile();
     }
+    Serial.println("Cleared all the non backup files");
     return 0; // success
 }
 

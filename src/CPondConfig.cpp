@@ -1,16 +1,8 @@
-/*
-  PM_APP.cpp - Application file is used to read the registor values of energy meter ic , calculate the suggested/ required capbank value and also used for detection of
-               power source
-
-  Dev: Infiplus Team
-  May 2021
-*/
-
 #include "CPondConfig.h"
 #include "stdio.h"
 #include <ArduinoJson.h>
 
-// #define SERIAL_DEBUG
+#define SERIAL_DEBUG
 #ifdef SERIAL_DEBUG
 #define debugPrint(...) Serial.print(__VA_ARGS__)
 #define debugPrintln(...) Serial.println(__VA_ARGS__)
@@ -47,8 +39,6 @@ int CPondConfig::loadPondConfig()
   char rdata[FileSize];
   /* Read File into data stream */
   ret = _fileSystem->readFile(FILENAME_IDSCONFIG, rdata);
-  // Serial.print("############################################### file details in load pond config ###############################################");
-  // Serial.println(rdata);
   if (ret > 0)
   {
     DynamicJsonDocument configInfo(FileSize * 2);
@@ -176,14 +166,14 @@ int CPondConfig::loadPondConfig()
             updatedPondIds[pondId] = pondName;
             /*Initially when the pond config is loaded from file keep all the ponds color in blue representing
             the boundaries are not available for those ponds and later when boundaries are loaded show their state whether active or harvested*/
-            m_pondStatusMap[pondName] = {!isPondBoundariesDataAvailable, activeStatus, POND_BOUNDARIES_NOT_AVAILABLE};
-            /*Save only teh single pond status*/
-            saveSinglePondStatusToFile(pondName);
+            m_pondStatusMap[pondName] = {isPondBoundariesDataAvailable, activeStatus, POND_BOUNDARIES_NOT_AVAILABLE};
+            /*Save only the single pond status*/
+            // saveSinglePondStatusToFile(pondName);
           }
           else
           {
             Serial.printf("Pond boundaries available , active Status: %d \n", activeStatus);
-            m_pondStatusMap[pondName] = {!isPondBoundariesDataAvailable, activeStatus, activeStatus};
+            m_pondStatusMap[pondName] = {isPondBoundariesDataAvailable, activeStatus, activeStatus};
           }
           // Update the PondSettingList array
           m_oPondList[i].m_iLocationVersion = locationVersion;
@@ -191,7 +181,7 @@ int CPondConfig::loadPondConfig()
           strncpy(m_oPondList[i].m_cPondId, pondId, sizeof(m_oPondList[i].m_cPondId));
           m_oPondList[i].m_iSalinity = salinity;
           strncpy(m_oPondList[i].m_cLocationID, locationId, sizeof(m_oPondList[i].m_cLocationID));
-          m_oPondList[i].PondActiveStatus = activeStatus;
+
         }
         /*Update Pond Status from Stored values if no file found save the local data in file*/
         if (!loadPondStatusFromFile())
@@ -213,6 +203,14 @@ int CPondConfig::loadPondConfig()
   }
   return 1;
 }
+
+void CPondConfig::updatePondStatus(const char* pondName, int status)
+{
+    if (pondName == nullptr || pondName[0] == '\0') return; // skip empty pond names
+    m_pondStatusMap[pondName].PondDataStatus = status;
+    savePondStatusToFile();
+}
+
 /*************************************************
  * save pond status in file system
  *************************************************/
@@ -222,8 +220,8 @@ bool CPondConfig::savePondStatusToFile()
 
   for (const auto &pair : m_pondStatusMap)
   {
+    if (pair.first.empty()) continue;
     JsonObject obj = doc.createNestedObject(pair.first.c_str());
-    obj["pb"] = pair.second.isBoundariesAvailable; // pb = pond boundaries available
     obj["isAct"] = pair.second.isActive;
     obj["pStat"] = pair.second.PondDataStatus;
   }
@@ -358,13 +356,19 @@ bool CPondConfig::loadPondStatusFromFile()
 
 void CPondConfig::resetAllPondDataStatus()
 {
-  debugPrintln("Resetting all PondDataStatus values to 1 if they are active");
+  Serial.println("Resetting all PondDataStatus values to 1 if they are active");
 
   for (auto &pair : m_pondStatusMap)
   {
+    debugPrintf("  Pond: %s, isActive: %d, oldStatus: %d\n", pair.first.c_str(), pair.second.isActive, pair.second.PondDataStatus);
     if (pair.second.isActive)
     {
+      debugPrintf("  --> New PondDataStatus for %s = %d\n", pair.first.c_str(), pair.second.PondDataStatus);
       pair.second.PondDataStatus = 1;
+    }
+    else
+    {
+      pair.second.PondDataStatus = 0;
     }
   }
   savePondStatusToFile();

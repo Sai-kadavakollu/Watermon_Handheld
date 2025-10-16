@@ -21,7 +21,7 @@ const uint16_t pondStatusColors[] = {
     TFT_YELLOW, // 2 - Taken but not uploaded
     TFT_GREEN,  // 3 - Taken and uploaded
     TFT_RED,    // 4 - Error
-    TFT_SKYBLUE // 5 - Boundaries Not Available
+    TFT_BLACK // 5 - Boundaries Not Available
 };
 
 // -------- Layout helpers (LANDSCAPE-AWARE) --------
@@ -635,6 +635,27 @@ void CDisplay::drawMemoryCard(int x, int y, int w, int h, uint16_t color)
   }
 }
 
+void CDisplay::printSavingCoordinates(void)
+{
+  static bool clear = false;
+  if(!clear)
+  {
+    tft.fillRect(0, FOOTER_Y(), SCREEN_WIDTH, FOOTER_H, bgColor());
+    clear = true;
+  }
+  int y0 = FOOTER_Y() - 1;
+  tft.drawLine(0, y0, SCREEN_WIDTH, y0, fgColor());
+  tft.drawLine(0, y0 + 1, SCREEN_WIDTH, y0 + 1, fgColor());
+
+  tft.setTextColor(TFT_RED);
+  tft.setFreeFont(&calibri_regular10pt7b);
+
+  tft.setCursor(20, y0 + 25);
+  tft.print("Please Wait Till");
+  tft.setCursor(20, y0 + 45);
+  tft.print("Pond Boundaries Saving");
+}
+
 // -------- Footer + popups (PRO text) --------
 void CDisplay::drawFooter(uint8_t footerType)
 {
@@ -1122,12 +1143,13 @@ void CDisplay::drawRightPanel(CPondConfig *PondConfig)
 {
   if (!FirstTimeInRightPanel)
   {
-    if (PondConfig->m_pondStatusMap == lastPondStatusMap)
+    if (PondConfig->m_pondStatusMap == lastPondStatusMap && !m_bRefreshRightPanel)
     {
       return; // No change, skip redraw
     }
   }
   FirstTimeInRightPanel = false;
+  m_bRefreshRightPanel = false;
 
   // Clear panel area
   tft.fillRect(153, 25, 82, 208, bgColor());
@@ -1135,16 +1157,6 @@ void CDisplay::drawRightPanel(CPondConfig *PondConfig)
   // Save a copy of the new state
   lastPondStatusMap = PondConfig->m_pondStatusMap;
 
-  // Group ponds by section letter (A, B, C…)
-  // std::map<char, std::vector<int>> pondGroups;
-  // for (const auto& pair : PondConfig->m_pondStatusMap) {
-  //   const std::string& key = pair.first;
-  //   if (key.length() < 2) continue;
-
-  //   char section = key[0];
-  //   int number = atoi(key.substr(1).c_str());
-  //   pondGroups[section].push_back(number);
-  // }
   std::map<std::string, std::vector<int>> pondGroups;
   for (const auto &pair : PondConfig->m_pondStatusMap)
   {
@@ -1223,7 +1235,7 @@ void CDisplay::drawRightPanel(CPondConfig *PondConfig)
         auto it = PondConfig->m_pondStatusMap.find(pondKey);
         if (it != PondConfig->m_pondStatusMap.end())
         {
-          status = it->second.PondDataStatus; //(it->second.isBoundariesAvailable)? it->second.PondDataStatus : 5;
+          status = (it->second.isBoundariesAvailable)? 5 : it->second.PondDataStatus;
         }
 
         uint16_t fillColor = pondStatusColors[status];
@@ -1232,7 +1244,8 @@ void CDisplay::drawRightPanel(CPondConfig *PondConfig)
 
         int textX = (boxNum < 10) ? (x + 5) : (x + 2);
         tft.setCursor(textX, y + 10);
-        tft.setTextColor(fgColor());
+        // tft.setTextColor(fgColor());
+        tft.setTextColor((status == 5)? bgColor() : fgColor());
         tft.print(boxNum);
       }
       currentColX += (boxSize + marginX); // move to next column
@@ -1268,7 +1281,8 @@ void CDisplay::drawRightPanel(CPondConfig *PondConfig)
           auto it = PondConfig->m_pondStatusMap.find(pondKey);
           if (it != PondConfig->m_pondStatusMap.end())
           {
-            status = it->second.PondDataStatus;
+            // status = it->second.PondDataStatus;
+            status = (it->second.isBoundariesAvailable)? 5 : it->second.PondDataStatus;
           }
 
           uint16_t fillColor = pondStatusColors[status];
@@ -1277,7 +1291,8 @@ void CDisplay::drawRightPanel(CPondConfig *PondConfig)
 
           int textX = (boxNum < 10) ? (x + 5) : (x + 2);
           tft.setCursor(textX, y + 10);
-          tft.setTextColor(fgColor());
+          // tft.setTextColor(fgColor());
+          tft.setTextColor((status == 5)? bgColor() : fgColor());
           tft.print(boxNum);
         }
       }
@@ -1286,197 +1301,11 @@ void CDisplay::drawRightPanel(CPondConfig *PondConfig)
   }
 }
 
-// // -------- Right panel (pond matrix) --------
-// void CDisplay::drawRightPanel(CPondConfig *PondConfig) {
-//   if (!FirstTimeInRightPanel) {
-//     if (PondConfig->m_pondStatusMap == lastPondStatusMap) return;
-//   }
-//   FirstTimeInRightPanel = false;
-
-//   tft.fillRect(RIGHT_X(), CONTENT_Y(), RIGHT_W, CONTENT_H(), bgColor());
-//   lastPondStatusMap = PondConfig->m_pondStatusMap;
-
-//   std::map<char, std::vector<int>> pondGroups;
-//   for (const auto& pair : PondConfig->m_pondStatusMap) {
-//     const std::string& key = pair.first;
-//     if (key.length() < 2) continue;
-//     char section = key[0];
-//     int number = atoi(key.substr(1).c_str());
-//     pondGroups[section].push_back(number);
-//   }
-
-//   int boxSize = 16;
-//   int marginX = 4;
-//   int marginY = 3;
-//   int startX  = RIGHT_X() + 2;
-//   int startY  = CONTENT_Y() + 20;
-//   int currentColX = startX;
-//   int maxRows = 10;
-
-//   tft.setFreeFont(&calibri_regular5pt7b);
-
-//   bool firstSection = true;
-//   for (const auto& group : pondGroups) {
-//     char section = group.first;
-//     std::vector<int> sortedNums = group.second;
-//     std::sort(sortedNums.begin(), sortedNums.end());
-
-//     int pondCount = (int)sortedNums.size();
-//     int neededCols = (pondCount > 10) ? 2 : 1;
-
-//     tft.setFreeFont(&calibri_regular10pt7b);
-//     tft.setCursor(currentColX + 2, startY - 6);
-//     tft.print(section);
-
-//     tft.drawLine(SEP_X() + 1, startY - 2, SCREEN_WIDTH, startY - 2, fgColor());
-
-//     if (!firstSection) {
-//       tft.drawLine(currentColX - (marginX / 2), startY - 21,
-//                    currentColX - (marginX / 2), startY + maxRows * (boxSize + marginY),
-//                    fgColor());
-//     }
-//     firstSection = false;
-
-//     tft.setFreeFont(&calibri_regular6pt7b);
-
-//     if (neededCols == 1) {
-//       for (int i = 0; i < pondCount && i < maxRows; i++) {
-//         int x = currentColX;
-//         int y = startY + i * (boxSize + marginY);
-//         int boxNum = sortedNums[i];
-
-//         char pondKey[6];
-//         snprintf(pondKey, sizeof(pondKey), "%c%d", section, boxNum);
-
-//         uint8_t status = 0;
-//         auto it = PondConfig->m_pondStatusMap.find(pondKey);
-//         if (it != PondConfig->m_pondStatusMap.end()) status = it->second.PondDataStatus;
-
-//         uint16_t fillColor = pondStatusColors[status];
-//         tft.fillRoundRect(x, y, boxSize, boxSize, 3, fillColor);
-//         tft.drawRoundRect(x, y, boxSize, boxSize, 3, fgColor());
-
-//         int textX = (boxNum < 10) ? (x + 5) : (x + 2);
-//         tft.setCursor(textX, y + 10);
-//         tft.setTextColor(fgColor());
-//         tft.print(boxNum);
-//       }
-//       currentColX += (boxSize + marginX);
-//     } else {
-//       std::vector<int> leftBoxes, rightBoxes;
-//       int half = (pondCount + 1) / 2;
-//       for (int i = 0; i < half; i++) leftBoxes.push_back(sortedNums[i]);
-//       for (int i = pondCount - 1; i >= half; i--) rightBoxes.push_back(sortedNums[i]);
-
-//       for (int i = 0; i < maxRows; i++) {
-//         int y = startY + i * (boxSize + marginY);
-
-//         if (i < (int)leftBoxes.size()) {
-//           int boxNum = leftBoxes[i];
-//           int x = currentColX;
-//           char pondKey[6];
-//           snprintf(pondKey, sizeof(pondKey), "%c%d", section, boxNum);
-
-//           uint8_t status = 0;
-//           auto it = PondConfig->m_pondStatusMap.find(pondKey);
-//           if (it != PondConfig->m_pondStatusMap.end()) status = it->second.PondDataStatus;
-
-//           uint16_t fillColor = pondStatusColors[status];
-//           tft.fillRoundRect(x, y, boxSize, boxSize, 3, fillColor);
-//           tft.drawRoundRect(x, y, boxSize, boxSize, 3, fgColor());
-
-//           int textX = (boxNum < 10) ? (x + 5) : (x + 2);
-//           tft.setCursor(textX, y + 10);
-//           tft.setTextColor(fgColor());
-//           tft.print(boxNum);
-//         }
-
-//         if (i < (int)rightBoxes.size()) {
-//           int boxNum = rightBoxes[i];
-//           int x = currentColX + (boxSize + marginX);
-//           char pondKey[6];
-//           snprintf(pondKey, sizeof(pondKey), "%c%d", section, boxNum);
-
-//           uint8_t status = 0;
-//           auto it = PondConfig->m_pondStatusMap.find(pondKey);
-//           if (it != PondConfig->m_pondStatusMap.end()) status = it->second.PondDataStatus;
-
-//           uint16_t fillColor = pondStatusColors[status];
-//           tft.fillRoundRect(x, y, boxSize, boxSize, 3, fillColor);
-//           tft.drawRoundRect(x, y, boxSize, boxSize, 3, fgColor());
-
-//           int textX = (boxNum < 10) ? (x + 5) : (x + 2);
-//           tft.setCursor(textX, y + 10);
-//           tft.setTextColor(fgColor());
-//           tft.print(boxNum);
-//         }
-//       }
-//       currentColX += 2 * (boxSize + marginX);
-//     }
-//   }
-// }
-
 // -------- Loading --------
 void CDisplay::LoadingPage(void)
 {
   drawCompanyLogo();
 }
-
-/*---------------Smart Config related Screens-------------*/
-
-// void CDisplay::DisplaySmartConfig(String Myname, String MyPassKey)
-// {
-//   static int val = 0;
-//   if (val == 0) ClearDisplay();
-//   val = 1;
-
-//   // Title
-//   tft.setTextColor(fgColor());
-//   tft.setFreeFont(&POPPINS_SEMIBOLD_016pt7b);
-//   tft.setCursor(20, 30);
-//   tft.print("Smart Config Setup");
-
-//   tft.drawLine(0, 42, SCREEN_WIDTH, 42, fgColor());
-
-//   // Step 1: Connect to Hotspot
-//   tft.setFreeFont(&POPPINS_SEMIBOLD_09pt7b);
-//   tft.setCursor(6, 65);
-//   tft.print("1. Connect to this Wi-Fi:");
-
-//   tft.setFreeFont(&calibri_regular10pt7b);
-//   tft.setCursor(20, 85);
-//   tft.print("SSID: ");
-//   tft.print(Myname);
-
-//   tft.setCursor(20, 105);
-//   tft.print("Password: ");
-//   tft.print(MyPassKey);
-
-//   // QR for Wi-Fi
-//   tft.setCursor(20, 125);
-//   tft.setFreeFont(&calibri_regular10pt7b);
-//   tft.print("Or just scan this QR:");
-//   drawWifiQRCode(Myname, MyPassKey); // <-- function we discussed earlier
-
-//   // Step 2: Open Setup Page
-//   tft.setFreeFont(&POPPINS_SEMIBOLD_09pt7b);
-//   tft.setCursor(6, 225);
-//   tft.print("2. Open Setup Page:");
-
-//   tft.setFreeFont(&calibri_regular10pt7b);
-//   tft.setCursor(20, 245);
-//   tft.print("URL: http://192.168.4.1");
-
-//   // QR for Setup URL
-//   tft.setCursor(20, 265);
-//   tft.print("Scan to open directly:");
-//   drawUrlQRCode("http://192.168.4.1"); // <-- similar QR function for URL
-
-//   // Step 3: Enter credentials
-//   tft.setFreeFont(&POPPINS_SEMIBOLD_09pt7b);
-//   tft.setCursor(6, 305);
-//   tft.print("3. Enter Wi-Fi & Save.");
-// }
 
 void CDisplay::printFOTA(int progress)
 {
