@@ -98,58 +98,66 @@ void Task5code(void *pvParameters)
  ********************************/
 void CreateTasks(int Value)
 {
-  // create a task that will be executed in the Task1code() function, with priority 1 and executed on core 0
+  // Task Priority Strategy:
+  // Priority 4: OTA (highest - critical firmware updates)
+  // Priority 3: Application (main application logic)
+  // Priority 2: Frame Handling (data processing)
+  // Priority 2: SmartConfig/GPS (reduced from 5 to prevent starvation)
+  // Priority 1: Modbus (lowest - command parsing)
+
+  // create a task that will be executed in the Task1code() function, with priority 2 and executed on core 1
   xTaskCreatePinnedToCore(
       Task1code,                    /* Task function. */
       "Frame",                      /* name of task. */
       18000,                        /* Stack size of task */
       NULL,                         /* parameter of the task */
       2,                            /* priority of the task */
-      &frameHandlingTaskHandler,                       /* Task handle to keep track of created task */
+      &frameHandlingTaskHandler,    /* Task handle to keep track of created task */
       CONFIG_ARDUINO_RUNNING_CORE); /* pin task to core 1 */
   delay(500);
 
-  // create a task that will be executed in the Task2code() function, with priority 1 and executed on core 1
+  // create a task that will be executed in the Task2code() function, with priority 3 and executed on core 1
   xTaskCreatePinnedToCore(
       Task2code,                    /* Task function. */
       "App",                        /* name of task. */
       20000,                        /* Stack size of task */
       NULL,                         /* parameter of the task */
       3,                            /* priority of the task */
-      &applicationTaskHandler,                       /* Task handle to keep track of created task */
+      &applicationTaskHandler,      /* Task handle to keep track of created task */
       CONFIG_ARDUINO_RUNNING_CORE); /* pin task to core 1 */
   delay(500);
 
-  // create a task that will be executed in the Task3code() function, with priority 1 and executed on core 1
+  // create a task that will be executed in the Task3code() function, with priority 1 and executed on core 0
   xTaskCreatePinnedToCore(
-      Task3code, /* Task function. */
-      "Modbus",  /* name of task. */
-      10000,     /* Stack size of task */
-      NULL,      /* parameter of the task */
-      1,         /* priority of the task */
-      &commandParseTaskHandler,    /* Task handle to keep track of created task */
-      0);        /* pin task to core 0 */
+      Task3code,                /* Task function. */
+      "Modbus",                 /* name of task. */
+      10000,                    /* Stack size of task */
+      NULL,                     /* parameter of the task */
+      1,                        /* priority of the task */
+      &commandParseTaskHandler, /* Task handle to keep track of created task */
+      0);                       /* pin task to core 0 */
   delay(500);
 
-  // create a task that will be executed in the Task1code() function, with priority 1 and executed on core 0
+  // create a task that will be executed in the Task4code() function, with priority 4 and executed on core 1
   xTaskCreatePinnedToCore(
       Task4code,       /* Task function. */
       "OTA",           /* name of task. */
       15000,           /* Stack size of task */
       NULL,            /* parameter of the task */
-      4,               /* priority of the task */
+      4,               /* priority of the task - HIGHEST for critical firmware updates */
       &OtaTaskHandler, /* Task handle to keep track of created task */
-      CONFIG_ARDUINO_RUNNING_CORE);              /* pin task to core 1 */
+      CONFIG_ARDUINO_RUNNING_CORE); /* pin task to core 1 */
   delay(500);
-  // create a task that will be executed in the Task1code() function, with priority 1 and executed on core 0
+
+  // create a task that will be executed in the Task5code() function, with priority 2 and executed on core 0
   xTaskCreatePinnedToCore(
       Task5code,           /* Task function. */
       "SmartConfig",       /* name of task. */
       5000,                /* Stack size of task */
       NULL,                /* parameter of the task */
-      5,                   /* priority of the task */
+      2,                   /* priority of the task - REDUCED from 5 to prevent starvation */
       &SmartConfigHandler, /* Task handle to keep track of created task */
-      0);                  /* pin task to core 1 */
+      0);                  /* pin task to core 0 */
   delay(500);
 }
 

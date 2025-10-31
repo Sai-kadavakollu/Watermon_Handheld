@@ -2,7 +2,7 @@
 #include "stdio.h"
 #include <ArduinoJson.h>
 
-#define SERIAL_DEBUG
+// #define SERIAL_DEBUG
 #ifdef SERIAL_DEBUG
 #define debugPrint(...) Serial.print(__VA_ARGS__)
 #define debugPrintln(...) Serial.println(__VA_ARGS__)
@@ -31,12 +31,20 @@ int CPondConfig::loadPondConfig()
   int ret = 0;
   int FileSize = _fileSystem->getFileSize(FILENAME_IDSCONFIG);
 
-  if (FileSize == 0)
+  if (FileSize <= 0 || FileSize > 8192) // Validate size: max 8KB
   {
-    debugPrintln("Wrong Setting file size...");
+    debugPrintln("Invalid Setting file size...");
     return 0;
   }
-  char rdata[FileSize];
+  
+  // Allocate buffer dynamically with size validation
+  char *rdata = new char[FileSize + 1];
+  if (!rdata)
+  {
+    debugPrintln("Memory allocation failed for config file");
+    return 0;
+  }
+  
   /* Read File into data stream */
   ret = _fileSystem->readFile(FILENAME_IDSCONFIG, rdata);
   if (ret > 0)
@@ -112,15 +120,24 @@ int CPondConfig::loadPondConfig()
           snprintf(pondFileName, sizeof(pondFileName), "/%s.txt", pondName);
 
           int fileSize = _fileSystem->getFileSize(pondFileName);
-          if (fileSize > 0)
+          if (fileSize > 0 && fileSize <= 4096) // Validate size: max 4KB per pond file
           {
             /* File exists, read and check version */
             char *pondData = new char[fileSize + 1];
+            if (!pondData)
+            {
+              debugPrintf("Memory allocation failed for pond file %s\n", pondName);
+              isPondBoundariesDataAvailable = NOT_AVAILABLE;
+              continue;
+            }
+            
             int ret = _fileSystem->readFile(pondFileName, pondData);
             if (ret > 0)
             {
               DynamicJsonDocument pondDoc(fileSize * 2);
               DeserializationError err = deserializeJson(pondDoc, pondData);
+              
+              // Always free pondData after JSON parsing attempt
               delete[] pondData;
 
               if (err.code() == DeserializationError::Ok)
@@ -148,6 +165,7 @@ int CPondConfig::loadPondConfig()
             }
             else
             {
+              // Free memory on read failure
               delete[] pondData;
               debugPrintf("Failed to read pond file for %s\n", pondName);
               isPondBoundariesDataAvailable = NOT_AVAILABLE;
@@ -193,14 +211,25 @@ int CPondConfig::loadPondConfig()
       else
       {
         debugPrintln("No config found in the file...");
+        delete[] rdata;
         return 0;
       }
+    }
+    else
+    {
+      debugPrintln("JSON deserialization failed");
+      delete[] rdata;
+      return 0;
     }
   }
   else
   {
     debugPrintln(" The file is empty ");
+    delete[] rdata;
+    return 0;
   }
+  
+  delete[] rdata;
   return 1;
 }
 
@@ -241,9 +270,17 @@ bool CPondConfig::saveSinglePondStatusToFile(const std::string &pondName)
     debugPrintln("PONDS_STATUS_CONFIG not found or empty");
     return false;
   }
+  
+  // Validate file size
+  if (size > 4096) // Max 4KB for pond status config
+  {
+    debugPrintln("PONDS_STATUS_CONFIG file too large");
+    return false;
+  }
 
   // Allocate buffer on heap for file content
-  const size_t bufferSize = 2048; // Adjust based on expected file size
+  size_t bufferSize = (size < 2048) ? 2048 : size + 256;
+  if (bufferSize > 4096) bufferSize = 4096; // Cap at 4KB
   char *buffer = new char[bufferSize];
   if (!buffer)
   {
@@ -323,8 +360,21 @@ bool CPondConfig::loadPondStatusFromFile()
     debugPrintln("PONDS_STATUS_CONFIG not found or empty");
     return false;
   }
+  
+  // Validate file size
+  if (size > 4096) // Max 4KB for pond status config
+  {
+    debugPrintln("PONDS_STATUS_CONFIG file too large");
+    return false;
+  }
 
   char *buffer = new char[size + 1];
+  if (!buffer)
+  {
+    debugPrintln("Memory allocation failed for pond status buffer");
+    return false;
+  }
+  
   if (!_fileSystem->readFile(PONDS_STATUS_CONFIG, buffer))
   {
     debugPrintln("Failed to read PONDS_STATUS_CONFIG");

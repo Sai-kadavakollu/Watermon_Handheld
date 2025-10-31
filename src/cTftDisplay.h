@@ -75,6 +75,7 @@ typedef struct __attribute__((packed))
   int batteryPercentage;
   bool LocationStatus;
   bool FramesInBackup;
+  char FWVerison[10];
 } Header_t;
 
 typedef struct __attribute__((packed))

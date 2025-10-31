@@ -6,6 +6,8 @@
 #include <SocketIOclient_Generic.h>
 #include <WebServer.h>
 #include <DNSServer.h>
+#include "RPCHandlers.h"
+#include "http_ops.h"
 
 #define SERIAL_DEBUG
 #ifdef SERIAL_DEBUG
@@ -21,6 +23,7 @@
 #define debugPrintlnf(...) // blank line
 #define WAITTIME 6
 #endif
+
 #define INTERVAL_TIME_IN_SECONDS 180
 #define INTERVAL_WAKEUP_TIME_IN_SECONDS 180
 #define TIMER_WAKEUP_ENABLE
@@ -38,86 +41,48 @@ cPCF85063A m_oRtc; // define a object of PCF85063A class
 FILESYSTEM m_oFileSystem;
 CBackupStorage m_oBackupStore;
 CDeviceConfig m_oConfig;
-cHTTP m_oHttp;
+struct http_device g_http_dev; // HTTP device with ops structure (C-style)
 CSensor m_oSensor;
 CGps m_oGps;
 CDisplay m_oDisp;
 Preferences m_oMemory;
 Geofence m_oGeofence;
 CPondConfig m_oPondConfig(&m_oFileSystem);
-CPN532 m_oRfid;
 volatile ButtonState_t ButtonState;
-
-bool m_bGetConfig = true;
-bool m_bSendframe = false;
-bool isOnline = false;
-bool RTCSyncNow = false;
-bool ResetEntireMap = false;
-bool pingNow = false;
-
-bool m_bDoFota = false;
-bool m_bGetPondDetails = false;
-bool FoundPondName = false;
-long ButtonPressedMillis;
-
-bool morningCheckedThisBoot = false;
-bool eveningCheckedThisBoot = false;
-uint8_t MorningPondMapResetTime = 2;
-uint8_t EveningPondMapResetTime = 14;
 
 /*Smart Config Objects and variables BEGIN*/
 WebServer server(80);
 DNSServer dnsServer;
-
-String Myname, NewSsid, NewPassword, MyPassKey = "12345678";
+SmartConfigData g_smartConfig;
 const byte DNS_PORT = 53;
-bool IsRecievedConfig = false;
-unsigned long reBoot;
-unsigned long SmartConfigTimeoutMillis;
-/*Smart Config Objects and variables END*/
-// For short and long button press capturing
-bool lastButtonState = HIGH;
-unsigned long pressStartTime = 0;
 
-bool m_bIsGPS = false;
-bool showReadWriteCycle = false;
-bool m_bIsCharging = false;
-bool EnterConfigRestart = false;
-time_t m_tPingEpoch = 0;
+// Mutex for protecting shared variables accessed by multiple tasks
+SemaphoreHandle_t xSharedVarMutex = NULL;
 
-int m_iTimeOutFrameCounter = 0;
-int TotalMinsOffSet = 180;
-int buzz = 0;
-int m_iOperationMode = EVENT_BASED_MODE;
-int iNoActivityCounter = 0;
-int sendFrameType = NO_FRAME;
-int rebootAfterSetDataCmd = -1;
-int rebootAfterOfflineCnt = 0;
-int m_iDataFrequencyInterval = 5;
-int m_iNetCheckCounter = 0;
-int CountDownTimer = 0;
-time_t LastPondNameCheckEpoch = 0;
+// Grouped application state - replaces scattered bool flags
+AppState g_appState;
+// Application timers and counters
+AppTimers g_timers;
+// Application configuration
+AppConfig g_config;
+// Sensor data struct
+SensorData g_sensorData;
+// Current pond information struct
+CurrentPondInfo g_currentPond;
+
 int LoadedPondsWhileCheckingCurrentPond = 0;
-
-float voltageValue = 0.0;
-float DoMglValue = 0.0;
-float DoSaturationVal = 0.0;
-float TempVal = 0.0;
 
 char sendResult[4000];
 char timebuffer[6];
 
-char CurrntPondName[20];
-char CurrentLocationId[100];
-char CurrentPondID[100];
-float CurrentPondSalinity;
-
-int lastMorningDay;
-int lastEveningDay;
-
 double SimulatedLat = 0.00000;
 double SimulatedLongs = 0.00000;
 bool Is_Simulated_Lat_Longs = false;
+
+// Global variables accessed by RPC handlers
+int sendFrameType = NO_FRAME;
+bool pingNow = false;
+int rebootAfterSetDataCmd = -1;
 
 /*device config*/
 char m_cWifiPass[20]; /*wifi password*/
@@ -131,8 +96,6 @@ cApplication::cApplication()
     m_u8SendBackUpFrameConter = 0;
     m_iRtcSyncCounter = 0;
     m_iFrameInProcess = NO_FRAME;
-    m_iButtonLongPressCounter = -1;
-    iNoActivityCounter = 0;
 }
 
 /*****************
@@ -145,7 +108,7 @@ cApplication::~cApplication()
 /****************************************************************
  *   Safe copy copy with Overflow protection
  *****************************************************************/
-static void safeStrcpy(char *destination, const char *source, int sizeofDest)
+void safeStrcpy(char *destination, const char *source, int sizeofDest)
 {
     strncpy(destination, source, sizeofDest - 1);
     destination[sizeofDest - 1] = 0;
@@ -162,9 +125,15 @@ float cApplication::roundToDecimals(float value, int decimals)
 static void onConnected()
 {
     debugPrintln("onConnected....");
-    m_bGetConfig = true;
-    isOnline = true;
-    pingNow = true;
+    
+    // Protect shared variables with mutex
+    if (xSharedVarMutex != NULL && xSemaphoreTake(xSharedVarMutex, portMAX_DELAY) == pdTRUE)
+    {
+        g_appState.getConfig = true;
+        g_appState.isOnline = true;
+        pingNow = true;
+        xSemaphoreGive(xSharedVarMutex);
+    }
 
     char LocalIp[25];
     String ipStr = WiFi.localIP().toString();
@@ -177,7 +146,13 @@ static void onConnected()
 static void onDisConnected()
 {
     debugPrintln("DisConnected.. :-(");
-    isOnline = false;
+    
+    // Protect shared variables with mutex
+    if (xSharedVarMutex != NULL && xSemaphoreTake(xSharedVarMutex, portMAX_DELAY) == pdTRUE)
+    {
+        g_appState.isOnline = false;
+        xSemaphoreGive(xSharedVarMutex);
+    }
 
     char LocalIp[25];
     String ipStr = WiFi.localIP().toString();
@@ -200,842 +175,9 @@ static void init_wifi(const char *wifi_network_name, const char *wifi_pass)
  *  RPC Function to set the Calibration values to the DO sensor
  *  r-> pointer holds the Item data buffer
  *************************************************/
-static void RPChandler_setCalValues(struct jsonrpc_request *r)
-{
-    char buff[30];
-    snprintf(buff, r->params_len + 1, "%S", (wchar_t *)r->params);
-    debugPrintln("@@ Inside setCalValues...");
-    debugPrintln(buff);
 
-    double k = -1;
-    double b = -1;
-    if (mjson_get_number(r->params, r->params_len, "$.k", &k) != -1)
-    {
-        m_oSensor.m_iK = k;
-    }
-    if (mjson_get_number(r->params, r->params_len, "$.b", &b) != -1)
-    {
-        m_oSensor.m_iB = b;
-    }
-    if (m_oSensor.setCalibrationValues())
-    {
-        jsonrpc_return_success(r, "{\"statusCode\":200,\"statusMsg\":\"Success.\"}");
-        m_bSendframe = true;
-    }
-    else
-    {
-        jsonrpc_return_success(r, "{\"statusCode\":300,\"statusMsg\":\"Not Set due to communicaton error.\"}");
-        m_bSendframe = true;
-    }
-}
+// RPC handlers moved to RPCHandlers.cpp
 
-/***********************************************
- *  RPC Function to set the Calibration values to the DO sensor
- *  r-> pointer holds the Item data buffer
- *************************************************/
-static void RPChandler_setSalinity(struct jsonrpc_request *r)
-{
-    char buff[30];
-    snprintf(buff, r->params_len + 1, "%S", (wchar_t *)r->params);
-    debugPrintln("@@ Inside setSalinity...");
-    debugPrintln(buff);
-
-    double val = -1;
-    if (mjson_get_number(r->params, r->params_len, "$.salinity", &val) != -1)
-    {
-        m_oSensor.m_fSalinity = val;
-    }
-
-    if (m_oSensor.setSalinity())
-    {
-        jsonrpc_return_success(r, "{\"statusCode\":200,\"statusMsg\":\"Success.\"}");
-        m_bSendframe = true;
-    }
-    else
-    {
-        jsonrpc_return_success(r, "{\"statusCode\":300,\"statusMsg\":\"Not Set due to communicaton error.\"}");
-        m_bSendframe = true;
-    }
-}
-
-static void RPChandler_setOperationMode(struct jsonrpc_request *r)
-{
-    char buff[30];
-    snprintf(buff, r->params_len + 1, "%S", (wchar_t *)r->params);
-    debugPrintln("@@ Inside setOperationMode...");
-    debugPrintln(buff);
-
-    double val = -1;
-    if (mjson_get_number(r->params, r->params_len, "$.operationMode", &val) != -1)
-    {
-        m_iOperationMode = val;
-        jsonrpc_return_success(r, "{\"statusCode\":200,\"statusMsg\":\"Success.\"}");
-        m_bSendframe = true;
-    }
-    else
-    {
-        jsonrpc_return_success(r, "{\"statusCode\":300,\"statusMsg\":\"Not Set due to communicaton error.\"}");
-        m_bSendframe = true;
-    }
-}
-
-static void RPChandler_setInterval(struct jsonrpc_request *r)
-{
-    double interval = 0;
-    if (mjson_get_number(r->params, r->params_len, "$.DataFrequencyinMin", &interval))
-    {
-        debugPrintln("inside setInterval");
-        m_iDataFrequencyInterval = interval;
-        m_oMemory.putInt("interval", m_iDataFrequencyInterval);
-    }
-    jsonrpc_return_success(r, "{\"statusCode\":200,\"statusMsg\":\"success.\"}");
-    m_bSendframe = true;
-}
-/**************************************************************
- *   RPC Function write data to RFID/NFC tag
- *   r-> pointer holds the config data buffer
- *
- * method: writeTag
- * Params: {"PondLocation" : "CU8MLFk1Jfm9UCMXCAeFp"}
- ***************************************************************/
-static void RPChandler_writeTag(struct jsonrpc_request *r)
-{
-    StaticJsonDocument<256> doc;
-
-    // Parse JSON params
-    DeserializationError error = deserializeJson(doc, r->params);
-    if (error)
-    {
-        debugPrintln("JSON parse error");
-        jsonrpc_return_success(r, "{\"statusCode\":400,\"statusMsg\":\"Invalid JSON\"}");
-        return;
-    }
-
-    const char *pondLocation = doc["PondLocation"];
-    if (!pondLocation || strlen(pondLocation) == 0)
-    {
-        debugPrintln("Missing or empty PondLocation");
-        jsonrpc_return_success(r, "{\"statusCode\":401,\"statusMsg\":\"Missing PondLocation\"}");
-        return;
-    }
-
-    debugPrintln("@@ Inside writeTag...");
-    debugPrint("PondLocation to write: ");
-    debugPrintln(pondLocation);
-
-    int Attempts = 0;
-    bool ret = false;
-
-    while (Attempts < 5)
-    {
-        debugPrintln("Attempting to write data into the tag...");
-        if (m_oRfid.writeDataToCard(pondLocation))
-        {
-            ret = true;
-            debugPrintln("Successfully wrote data");
-            break;
-        }
-        Attempts++;
-    }
-
-    bool isCardFound = m_oRfid.isTagPresent();
-    if (ret)
-    {
-        jsonrpc_return_success(r, "{\"statusCode\":200,\"statusMsg\":\"Write successful\"}");
-        showReadWriteCycle = true;
-    }
-    else
-    {
-        jsonrpc_return_success(r, "{\"statusCode\":300,\"statusMsg\":\"Write failed\"}");
-    }
-
-    m_bSendframe = true;
-}
-
-/**************************************************************
- *   RPC Function read data from RFID/NFC tag
- *   r-> pointer holds the config data buffer
- ***************************************************************/
-static void RPChandler_readTag(struct jsonrpc_request *r)
-{
-    char rdata[512] = "";
-    debugPrintln("@@ Inside readTag...");
-    int Attempts = 0;
-    bool ret = false;
-    /*try reading the card 5 times till it read tag successfully*/
-    while (Attempts < 5)
-    {
-        if (m_oRfid.readDataFromCard(rdata))
-        {
-            ret = true;
-            break;
-        }
-        Attempts++;
-    }
-
-    debugPrintln(rdata);
-    if (ret)
-    {
-        jsonrpc_return_success(r, "%s", (const char *)rdata);
-    }
-    else
-    {
-        jsonrpc_return_success(r, "{\"statusCode\":300,\"statusMsg\":\"fail.\"}");
-    }
-    m_bSendframe = true;
-}
-
-static void RPChandler_getSalinity(struct jsonrpc_request *r)
-{
-    char buff[30];
-    snprintf(buff, r->params_len + 1, "%S", (wchar_t *)r->params);
-    debugPrintln("@@ Inside getSalinity...");
-    debugPrintln(buff);
-
-    m_oSensor.getSalinity();
-    float salinity = m_oSensor.m_fSalinity;
-
-    jsonrpc_return_success(r, "{\"statusCode\":200,\"statusMsg\":\"Success.\",\"salinity\":\"%s.\"}", String(salinity));
-    m_bSendframe = true;
-}
-
-static void RPChandler_getPressure(struct jsonrpc_request *r)
-{
-    char buff[30];
-    snprintf(buff, r->params_len + 1, "%S", (wchar_t *)r->params);
-    debugPrintln("@@ Inside getPressure...");
-    debugPrintln(buff);
-
-    m_oSensor.getPressure();
-    float pressure = m_oSensor.m_fPressure;
-
-    jsonrpc_return_success(r, "{\"statusCode\":200,\"statusMsg\":\"Success.\",\"pressure\":\"%s.\"}", String(pressure));
-
-    m_bSendframe = true;
-}
-
-/***********************************************
- *  RPC Function to set the Calibration values to the DO sensor
- *  r-> pointer holds the Item data buffer
- *************************************************/
-static void RPChandler_setPressure(struct jsonrpc_request *r)
-{
-    char buff[30];
-    snprintf(buff, r->params_len + 1, "%S", (wchar_t *)r->params);
-    debugPrintln("@@ Inside setPressure...");
-    debugPrintln(buff);
-
-    double val = -1;
-    if (mjson_get_number(r->params, r->params_len, "$.pressure", &val) != -1)
-    {
-        m_oSensor.m_fPressure = val;
-    }
-
-    if (m_oSensor.setPressure())
-    {
-        jsonrpc_return_success(r, "{\"statusCode\":200,\"statusMsg\":\"Success.\"}");
-        m_bSendframe = true;
-    }
-    else
-    {
-        jsonrpc_return_success(r, "{\"statusCode\":300,\"statusMsg\":\"Not Set due to communicaton error.\"}");
-        m_bSendframe = true;
-    }
-}
-
-/***********************************************
- *  RPC Function to set the Calibration values to the DO sensor
- *  r-> pointer holds the Item data buffer
- *************************************************/
-static void RPChandler_getCalValues(struct jsonrpc_request *r)
-{
-    StaticJsonDocument<100> doc;
-    debugPrintln("@@ Inside getCalValues...");
-
-    m_oSensor.getCalibrationValues();
-    doc["k"] = m_oSensor.m_iK;
-    doc["b"] = m_oSensor.m_iB;
-
-    char result[100];
-    serializeJson(doc, result);
-    debugPrintln(result);
-    jsonrpc_return_success(r, "%s", result);
-    m_bSendframe = true;
-}
-/*****************************************************************
- * RPC Function to set device in safe mode
- * r-> pointer holds the config data buffer
- * @param [in] None
- * @param [out] Status code with status msg
- ******************************************************************/
-static void RPChandler_runSafeMode(struct jsonrpc_request *r)
-{
-    debugPrintln("@@ Inside runSafeMode.....");
-    m_oConfig.m_bIsSafeModeOn = true;
-    jsonrpc_return_success(r, "{\"statusCode\":200,\"statusMsg\":\"success.\"}");
-    m_bSendframe = true;
-}
-
-/**************************************************************
- * RPC Function to check device info
- * r-> pointer holds the config data buffer
- * @param [in] None
- * @param [out] device Info in Json format
- ***************************************************************/
-static void RPChandler_whoAreYou(struct jsonrpc_request *r)
-{
-    // debugPrintln("@@ Inside whoAreYou.....");
-    StaticJsonDocument<700> doc;
-    doc["deviceId"] = WiFi.macAddress();
-    doc["localIp"] = WiFi.localIP();
-    doc["fwVersn"] = FW_VERSION;
-    doc["BoardVersion"] = BOARD_VERSION;
-    doc["currentEpoch"] = m_oConfig.m_tEpoch;
-    doc["ResetReason"] = m_oConfig.espResetReason;
-    doc["FramesInBackup"] = m_oDisp.DisplayGeneralVariables.backUpFramesCnt;
-    doc["Wifissid"] = WiFi.SSID();
-    doc["rssi"] = WiFi.RSSI();
-    doc["lat"] = m_oGps.mPosition.m_lat;
-    doc["long"] = m_oGps.mPosition.m_lng;
-    doc["HDop"] = m_oGps.mPosition.hDop;
-    doc["Satellite"] = m_oGps.mPosition.m_iSatellites;
-    doc["CurrentPondName"] = CurrntPondName;
-    doc["DoMg/l"] = DoMglValue;
-    doc["Temp"] = TempVal;
-    doc["Saturation"] = DoSaturationVal;
-    doc["Salinity"] = CurrentPondSalinity;
-    doc["localOffsetTimeMin"] = TotalMinsOffSet;
-    doc["operationMode"] = m_iOperationMode;
-    doc["progress"] = m_oHttp.currprogress;
-
-    char result[700];
-    serializeJson(doc, result);
-    // debugPrintln(result);
-    jsonrpc_return_success(r, "%s", result);
-    m_bSendframe = true;
-}
-
-/**************************************************************
- *  Sync RTC
- ***************************************************************/
-static void RPChandler_syncRTC(struct jsonrpc_request *r)
-{
-    RTCSyncNow = true;
-    jsonrpc_return_success(r, "{\"statusCode\":200,\"statusMsg\":\"success.\"}");
-    m_bSendframe = true;
-}
-
-
-/**************************************************************
- *  RPC to get the CurrentPond
- ***************************************************************/
-static void RPChandler_ResetPondStatus(struct jsonrpc_request *r)
-{
-    Serial.println("Resetting pond status ");
-    ResetEntireMap = true;
-    jsonrpc_return_success(r, "{\"statusCode\":200,\"statusMsg\":\"success.\"}");
-    m_bSendframe = true;
-}
-/******************************************************************************
- * Set Pond Map reset time to clear the frame saved status on the UI
- {
-    "MorningResetTime":2,
-    "EveningResetTime":16
- }
-*****************************************************************************/
-static void RPChandler_SetPondMapResetTime(struct jsonrpc_request *r)
-{
-    debugPrintln("[App][RPC]:Set pond Map reset time ");
-    char buff[200];
-    snprintf(buff, r->params_len + 1, "%S", (wchar_t *)r->params);
-    Serial.println(buff);
-
-    double a = -1, b = -1;
-
-    mjson_get_number(r->params, r->params_len, "$.MorningResetTime", &a);
-    mjson_get_number(r->params, r->params_len, "$.EveningResetTime", &b);
-
-    debugPrintf("Morning Reset Time in hours: %f", a);
-    debugPrintf("Evening Reset Time in hours: %f", b);
-
-    MorningPondMapResetTime = ((int)a);
-    EveningPondMapResetTime = ((int)b);
-
-    Serial.println("[RPC][SetPondMapReset]: type conversion done");
-
-    m_oMemory.putInt("MrngTime", MorningPondMapResetTime);
-    m_oMemory.putInt("EvngTime", EveningPondMapResetTime);
-
-    Serial.println("[RPC][SetPondMapReset]: saving to NVS done");
-
-    jsonrpc_return_success(r, "{\"MorningTime\":\"%d\",\"Evening Time\":\"%d\",\"statusCode\":200,\"statusMsg\":\"Success.\"}", MorningPondMapResetTime, EveningPondMapResetTime);
-    m_bSendframe = true;
-}
-/**********************************************************
-* RPC Function to operate Slot
-* r-> pointer holds the config data buffer
-* @param [in] Data:
-    {
-        "version": 1699333718,
-        "LocalMin":180
-    }
-* @param [out] Status code with status msg
-***********************************************************/
-static void RPChandler_setLocalTimeOffset(struct jsonrpc_request *r)
-{
-    debugPrintln("@@ Inside setLocalTimeOffset.....");
-    char buff[124];
-    snprintf(buff, r->params_len + 1, "%S", (wchar_t *)r->params);
-    debugPrintln(buff);
-    static double preVersn = 0;
-    static double Versn = 0;
-    mjson_get_number(r->params, r->params_len, "$.version", &Versn);
-    if (Versn != preVersn) /*check command version to avoid repeated commands with same versionthe file*/
-    {
-        debugPrintln(Versn);
-        preVersn = Versn;
-        double localTimeMin = -1;
-
-        mjson_get_number(r->params, r->params_len, "$.LocalMin", &localTimeMin);
-        debugPrint("LOcal time in Mins: ");
-        debugPrintln(localTimeMin);
-        TotalMinsOffSet = ((int)localTimeMin);
-
-        m_oMemory.putInt("LocalMins", TotalMinsOffSet);
-
-        jsonrpc_return_success(r, "{\"statusCode\":200,\"statusMsg\":\"success.\", \"localTimeMin\":%d}", TotalMinsOffSet);
-        m_bSendframe = true;
-    }
-    else
-    {
-        debugPrintln("Invalid version...");
-        jsonrpc_return_success(r, "{\"statusCode\":300,\"statusMsg\":\"Invalid Version.\"}");
-        m_bSendframe = true;
-    }
-}
-
-/**********************************************************
- * RPC Function to update configIds file in feeder
- * r-> pointer holds the config data buffer
- * @param [in] None
- * @param [out] Status code with status msg
- ***********************************************************/
-static void RPChandler_updateConfig(struct jsonrpc_request *r)
-{
-    debugPrintln("@@ Inside updateConfigIds.....");
-    m_bGetConfig = true;
-    jsonrpc_return_success(r, "{\"statusCode\":200,\"statusMsg\":\"Success.\"}");
-    m_bSendframe = true;
-}
-
-/**********************************************************
- * RPC Function to get configIDS file from stater
- * r-> pointer holds the config data buffer
- * @param [in] None
- * @param [out] configIDs file from filesystem on succerss
- ***********************************************************/
-static void RPChandler_getConfigIDs(struct jsonrpc_request *r)
-{
-    int FileSize = m_oFileSystem.getFileSize(FILENAME_IDSCONFIG);
-    char rdata[FileSize];
-    debugPrintln("@@ Inside getConfigIds.....");
-    int ret = m_oFileSystem.readFile(FILENAME_IDSCONFIG, rdata);
-    if (ret)
-    {
-        jsonrpc_return_success(r, "%s", (const char *)rdata);
-        m_bSendframe = true;
-    }
-    else
-    {
-        jsonrpc_return_success(r, "{\"statusCode\":300,\"statusMsg\":\"file Not available.\"}");
-        m_bSendframe = true;
-    }
-}
-
-/**************************************************************
- *   RPC Function to clear Backup files
- *   r-> pointer holds the config data buffer
- ***************************************************************/
-static void RPChandler_ClearBackupFiles(struct jsonrpc_request *r)
-{
-    m_oBackupStore.clearAllFiles(&m_oFileSystem);
-    jsonrpc_return_success(r, "{\"statusCode\":200,\"statusMsg\":\"success.\"}");
-    m_bSendframe = true;
-}
-/**************************************************************
- *   RPC Function to get list of files in filesystem with sizes
- *   r-> pointer holds the config data buffer
- * @param [in] None
- * @param [out] JSON array with file names and sizes
- ***************************************************************/
-static void RPChandler_getFileList(struct jsonrpc_request *r)
-{
-    debugPrintln("@@ Inside getFileList.....");
-
-    File root = SPIFFS.open("/");
-    if (!root || !root.isDirectory())
-    {
-        jsonrpc_return_success(r, "{\"statusCode\":500,\"statusMsg\":\"Failed to open filesystem root.\"}");
-        m_bSendframe = true;
-        return;
-    }
-
-    DynamicJsonDocument doc(2048);
-    JsonArray result = doc.createNestedArray("result");
-
-    File file = root.openNextFile();
-    while (file)
-    {
-        char entry[128];
-        snprintf(entry, sizeof(entry), "%s, %d", file.name(), file.size());
-        result.add(entry);
-        file = root.openNextFile();
-    }
-
-    char response[2048];
-    serializeJson(doc, response, sizeof(response));
-
-    jsonrpc_return_success(r, "%s", response);
-    m_bSendframe = true;
-}
-
-/**************************************************************
- *   RPC Function to get file contents by filename
- *   r-> pointer holds the config data buffer
- * @param [in] Data: {"filename": "BAK_0.txt"}
- * @param [out] File contents or error message
- ***************************************************************/
-static void RPChandler_getFileContent(struct jsonrpc_request *r)
-{
-    debugPrintln("@@ Inside getFileContent.....");
-
-    char filename[64];
-    if (mjson_get_string(r->params, r->params_len, "$.filename", filename, sizeof(filename)) == -1)
-    {
-        jsonrpc_return_success(r, "{\"statusCode\":400,\"statusMsg\":\"Missing filename parameter.\"}");
-        m_bSendframe = true;
-        return;
-    }
-
-    // Ensure filename starts with '/'
-    char filepath[70];
-    if (filename[0] == '/')
-    {
-        safeStrcpy(filepath, filename, sizeof(filepath));
-    }
-    else
-    {
-        snprintf(filepath, sizeof(filepath), "/%s", filename);
-    }
-
-    File file = SPIFFS.open(filepath, "r");
-    if (!file)
-    {
-        jsonrpc_return_success(r, "{\"statusCode\":404,\"statusMsg\":\"File not found.\"}");
-        m_bSendframe = true;
-        return;
-    }
-
-    size_t fileSize = file.size();
-    if (fileSize == 0)
-    {
-        file.close();
-        jsonrpc_return_success(r, "{\"statusCode\":200,\"statusMsg\":\"Success.\",\"content\":\"\"}");
-        m_bSendframe = true;
-        return;
-    }
-
-    // Allocate buffer for file content
-    char *content = (char *)malloc(fileSize + 1);
-    if (!content)
-    {
-        file.close();
-        jsonrpc_return_success(r, "{\"statusCode\":500,\"statusMsg\":\"Memory allocation failed.\"}");
-        m_bSendframe = true;
-        return;
-    }
-
-    size_t bytesRead = file.readBytes(content, fileSize);
-    content[bytesRead] = '\0';
-    file.close();
-
-    // Create response with content
-    DynamicJsonDocument doc(fileSize + 256);
-    doc["statusCode"] = 200;
-    doc["statusMsg"] = "Success";
-    doc["filename"] = filename;
-    doc["size"] = bytesRead;
-    doc["content"] = content;
-
-    char *response = (char *)malloc(fileSize + 300);
-    if (response)
-    {
-        serializeJson(doc, response, fileSize + 300);
-        jsonrpc_return_success(r, "%s", response);
-        free(response);
-    }
-    else
-    {
-        jsonrpc_return_success(r, "{\"statusCode\":500,\"statusMsg\":\"Response allocation failed.\"}");
-    }
-
-    free(content);
-    m_bSendframe = true;
-}
-/**************************************************************
- *   RPC Function to delete a file from filesystem
- *   r-> pointer holds the config data buffer
- * @param [in] Data: {"filename": "P1.txt"}
- * @param [out] Status code with status message
- ***************************************************************/
-static void RPChandler_deleteFile(struct jsonrpc_request *r)
-{
-    debugPrintln("@@ Inside deleteFile.....");
-
-    char filename[64];
-    if (mjson_get_string(r->params, r->params_len, "$.filename", filename, sizeof(filename)) == -1)
-    {
-        jsonrpc_return_success(r, "{\"statusCode\":400,\"statusMsg\":\"Missing filename parameter.\"}");
-        m_bSendframe = true;
-        return;
-    }
-
-    // Ensure filename starts with '/'
-    char filepath[70];
-    if (filename[0] == '/')
-    {
-        safeStrcpy(filepath, filename, sizeof(filepath));
-    }
-    else
-    {
-        snprintf(filepath, sizeof(filepath), "/%s", filename);
-    }
-
-    // Check if file exists
-    if (!SPIFFS.exists(filepath))
-    {
-        jsonrpc_return_success(r, "{\"statusCode\":404,\"statusMsg\":\"File not found.\"}");
-        m_bSendframe = true;
-        return;
-    }
-
-    // Delete the file
-    if (SPIFFS.remove(filepath))
-    {
-        debugPrintf("File deleted: %s\n", filepath);
-        jsonrpc_return_success(r, "{\"statusCode\":200,\"statusMsg\":\"File deleted successfully.\"}");
-    }
-    else
-    {
-        debugPrintf("Failed to delete file: %s\n", filepath);
-        jsonrpc_return_success(r, "{\"statusCode\":500,\"statusMsg\":\"Failed to delete file.\"}");
-    }
-
-    m_bSendframe = true;
-}
-/**********************************************************
- * RPC Function to update firmware using elagent ota
- * r-> pointer holds the config data buffer
- * @param [in] None
- * @param [out] Status code with status msg
- ***********************************************************/
-static void RPChandler_firmwareUpdate(struct jsonrpc_request *r)
-{
-    debugPrintln("@@ Inside firmwareUpdate.....");
-    char buff[200];
-    snprintf(buff, r->params_len + 1, "%S", (wchar_t *)r->params);
-    debugPrintln(buff);
-    static double preVersn = 0;
-    static double Versn = 0;
-    mjson_get_number(r->params, r->params_len, "$.version", &Versn);
-    if (Versn != preVersn)
-    {
-        preVersn = Versn;
-        char Id[250] = "";
-        if (mjson_get_string(r->params, r->params_len, "$.firmwareUrl", Id, sizeof(Id)) != -1)
-        {
-            m_bDoFota = true;
-            m_oHttp.currprogress = 0;
-            safeStrcpy(m_oHttp.m_cUriFirmwareFOTA, Id, sizeof(m_oHttp.m_cUriFirmwareFOTA));
-            jsonrpc_return_success(r, "{\"statusCode\":200,\"statusMsg\":\"Firmware URL update success\"}");
-        }
-        else
-        {
-            jsonrpc_return_success(r, "{\"statusCode\":250,\"statusMsg\":\"Invalid URL\"}");
-        }
-    }
-    else
-    {
-        jsonrpc_return_success(r, "{\"statusCode\":300,\"statusMsg\":\"Invalid Version number\"}");
-    }
-    m_bSendframe = true;
-}
-
-/**************************************************************
- * RPC Function to get CALL_FRAME
- * r-> pointer holds the config data buffer
- * @param [in] None
- * @param [out] Status code with status msg
- ***************************************************************/
-static void RPChandler_refreshFrame(struct jsonrpc_request *r)
-{
-    debugPrintln("@@ Inside refreshFrame.....");
-    sendFrameType = CALL_FRAME;
-    jsonrpc_return_success(r, "{\"statusCode\":200,\"statusMsg\":\"Live frame sent success\"}");
-    m_bSendframe = true;
-}
-
-static void RPChandler_sysReboot(struct jsonrpc_request *r)
-{
-    debugPrintln("@@ Inside sysReboot.....");
-    rebootAfterSetDataCmd = 100;
-    jsonrpc_return_success(r, "{\"statusCode\":200,\"statusMsg\":\"Live frame sent success\"}");
-    m_bSendframe = true;
-}
-/**********************************************************
- * RPC Function to set Wifi Credentials
- * r-> pointer holds the config data buffer
- * @param [in] Data:
-    {
-        "version": 1707910462,
-        "wifiSsid": "Nextaqua_EAP110_1",
-        "wifiPass": "Infi@2016"
-    }
- * @param [out] Status code with status msg
- ***********************************************************/
-static void RPChandler_setWifiCredentials(struct jsonrpc_request *r)
-{
-    debugPrintln("@@ Inside setWifiCredentials.....");
-    char buff[124];
-    snprintf(buff, r->params_len + 1, "%S", (wchar_t *)r->params);
-    debugPrintln(buff);
-    static double preVersn = 0;
-    static double Versn = 0;
-    mjson_get_number(r->params, r->params_len, "$.version", &Versn);
-    if (Versn != preVersn) /*check command version to avoid repeated commands with same versionthe file*/
-    {
-        debugPrintln(Versn);
-        preVersn = Versn;
-        char wifiSsid[25];
-        char wifiPass[25];
-        bool isUpdate = false;
-        if (mjson_get_string(r->params, r->params_len, "$.wifiSsid", wifiSsid, sizeof(wifiSsid)) != -1)
-        {
-            safeStrcpy(m_cWifiSsid, wifiSsid, sizeof(m_cWifiSsid));
-            isUpdate = true;
-        }
-        if (mjson_get_string(r->params, r->params_len, "$.wifiPass", wifiPass, sizeof(wifiPass)) != -1)
-        {
-            safeStrcpy(m_cWifiPass, wifiPass, sizeof(m_cWifiPass));
-            isUpdate = true;
-        }
-
-        if (isUpdate)
-        {
-            debugPrintln("@@ saving wifi credentials");
-            m_oMemory.putString("wifiSsid", m_cWifiSsid);
-            m_oMemory.putString("wifiPass", m_cWifiPass);
-            rebootAfterSetDataCmd = 100;
-        }
-        jsonrpc_return_success(r, "{\"wifiSsid\":\"%s\",\"wifiPass\":\"%s\",\"statusCode\":200,\"statusMsg\":\"Success.\"}", m_cWifiSsid, m_cWifiPass);
-        m_bSendframe = true;
-    }
-    else
-    {
-        debugPrintln("Invalid version...");
-        jsonrpc_return_success(r, "{\"wifiSsid\":\"%s\",\"wifiPass\":\"%s\",\"statusCode\":300,\"statusMsg\":\"Invalid Version.\"}", m_cWifiSsid, m_cWifiPass);
-        m_bSendframe = true;
-    }
-}
-
-/**********************************************************
- * RPC Function to server credentials like ip and port
- * r-> pointer holds the config data buffer
- * @param [in] Data:
-    {
-        "version": 1707830397,
-        "IP": "34.93.69.40"
-    }
- * @param [out] Status code with status msg
- ***********************************************************/
-static void RPChandler_setServerCredntials(struct jsonrpc_request *r)
-{
-    debugPrintln("@@ Inside setServerCredntials.....");
-    char buff[124];
-    snprintf(buff, r->params_len + 1, "%S", (wchar_t *)r->params);
-    debugPrintln(buff);
-    static double preVersn = 0;
-    static double Versn = 0;
-    mjson_get_number(r->params, r->params_len, "$.version", &Versn);
-    if (Versn != preVersn) /*check command version to avoid repeated commands with same versionthe file*/
-    {
-        debugPrintln(Versn);
-        preVersn = Versn;
-        char IP[20];
-        if (mjson_get_string(r->params, r->params_len, "$.IP", IP, sizeof(IP)) != -1)
-        {
-            safeStrcpy(m_oHttp.m_cServerIP, IP, sizeof(m_oHttp.m_cServerIP));
-            debugPrintln("@@ saving server details");
-            m_oMemory.putString("serverIP", m_oHttp.m_cServerIP);
-            rebootAfterSetDataCmd = 100;
-        }
-        jsonrpc_return_success(r, "{\"IP\":\"%s\",\"port\":\"%d\",\"statusCode\":200,\"statusMsg\":\"Success.\"}", m_oHttp.m_cServerIP, m_oHttp.m_u16ServerPort);
-        m_bSendframe = true;
-    }
-    else
-    {
-        debugPrintln("Invalid version...");
-        jsonrpc_return_success(r, "{\"IP\":\"%s\",\"port\":\"%d\",\"statusCode\":300,\"statusMsg\":\"Invalid Version.\"}", m_oHttp.m_cServerIP, m_oHttp.m_u16ServerPort);
-        m_bSendframe = true;
-    }
-}
-/**************************************************************
- *   RPC Function to clear files except the Backup files
- *   r-> pointer holds the config data buffer
- ***************************************************************/
-static void RPChandler_ClearNonBackupFiles(struct jsonrpc_request *r)
-{
-    m_oBackupStore.clearNonBackupFiles(&m_oFileSystem);
-    ResetEntireMap = true;
-    jsonrpc_return_success(r, "{\"statusCode\":200,\"statusMsg\":\"success.\"}");
-    m_bSendframe = true;
-}
-
-/**********************************************************
- * RPC Function to server credentials like ip and port
- * r-> pointer holds the config data buffer
- * @param [in] Data:
-    {
-        "Epoch":1795525211,
-        "Lat": -2.553424,
-        "Long": -80.565472
-    }
- * @param [out] Status code with status msg
- ***********************************************************/
-static void RPChandler_SimulatedPosts(struct jsonrpc_request *r)
-{
-    char buff[150];
-    snprintf(buff, r->params_len + 1, "%S", (wchar_t *)r->params);
-    debugPrintln("@@ Inside SimulatedPosts...");
-    debugPrintln(buff);
-
-    double e = 0;
-    mjson_get_number(r->params, r->params_len, "$.Epoch", &e);
-    m_oConfig.m_tEpoch = e;
-
-    double val = -1, val2 = -1;
-    if (mjson_get_number(r->params, r->params_len, "$.Lat", &val) != -1)
-    {
-        SimulatedLat = val;
-    }
-    if (mjson_get_number(r->params, r->params_len, "$.Long", &val2) != -1)
-    {
-        SimulatedLongs = val2;
-    }
-    Is_Simulated_Lat_Longs = true;
-    jsonrpc_return_success(r, "{\"statusCode\":200,\"statusMsg\":\"Success.\"}");
-    m_bSendframe = true;
-}
 /****************************************************************************************
  * Function to intialize rpc Function Handlers and mdash begin with wifi
  * @param [in] None
@@ -1044,13 +186,11 @@ static void RPChandler_SimulatedPosts(struct jsonrpc_request *r)
 void cApplication::wifiInitialization(void)
 {
     init_wifi(m_cWifiSsid, m_cWifiPass);
-    /*Expose RCPs for OTA and Activate safe mode*/
-    jsonrpc_export("ActivateSafeMode", RPChandler_runSafeMode);
-    jsonrpc_export("FOTA", RPChandler_firmwareUpdate);
 }
 
 void allRpcInit(void)
 {
+    debugPrintln("@@ [INIT] Registering RPC handlers");
     jsonrpc_export("wifiConfig", RPChandler_setWifiCredentials);
     jsonrpc_export("serverConfig", RPChandler_setServerCredntials);
     jsonrpc_export("getSalinity", RPChandler_getSalinity);
@@ -1069,8 +209,6 @@ void allRpcInit(void)
     jsonrpc_export("getLiveFrame", RPChandler_refreshFrame);
     jsonrpc_export("sysReboot", RPChandler_sysReboot);
     jsonrpc_export("setDataFrequency", RPChandler_setInterval);
-    jsonrpc_export("writeTag", RPChandler_writeTag);
-    jsonrpc_export("readTag", RPChandler_readTag);
     jsonrpc_export("ResetPondStatus", RPChandler_ResetPondStatus);
     jsonrpc_export("SetPondMapResetTime", RPChandler_SetPondMapResetTime);
     jsonrpc_export("ClearNonBackupFiles", RPChandler_ClearNonBackupFiles);
@@ -1078,11 +216,35 @@ void allRpcInit(void)
     jsonrpc_export("getFileList", RPChandler_getFileList);
     jsonrpc_export("getFileContent", RPChandler_getFileContent);
     jsonrpc_export("deleteFile", RPChandler_deleteFile);
+    jsonrpc_export("updateConfig", RPChandler_updateConfig);
+    jsonrpc_export("ActivateSafeMode", RPChandler_runSafeMode);
+    debugPrintln("@@ [INIT] RPC handlers registered");
 }
 
 static int sender(const char *frame, int frame_len, void *privdata)
 {
-    strncat(sendResult, frame, frame_len);
+    debugPrintf("@@ [SENDER] Called with frame_len=%d\n", frame_len);
+    
+    // Calculate current length and remaining space
+    size_t currentLen = strlen(sendResult);
+    size_t remainingSpace = sizeof(sendResult) - currentLen - 1; // -1 for null terminator
+    
+    debugPrintf("@@ [SENDER] currentLen=%d, remainingSpace=%d\n", currentLen, remainingSpace);
+    
+    // Only append if there's enough space
+    if (frame_len <= remainingSpace)
+    {
+        strncat(sendResult, frame, frame_len);
+        debugPrintln("@@ [SENDER] Frame appended successfully");
+    }
+    else
+    {
+        // Append what we can and log overflow
+        strncat(sendResult, frame, remainingSpace);
+        debugPrintf("@@ [SENDER] Buffer overflow! Needed %d bytes, had %d\n", frame_len, remainingSpace);
+    }
+    
+    debugPrintln("@@ [SENDER] Returning");
     return 1;
 }
 /*Process RPC and call the function*/
@@ -1101,8 +263,8 @@ void processRPC(char *jsonString)
         String serializedRpcObject;
         serializeJson(innerJsonString, serializedRpcObject);
 
-        // debugPrint("Complete RPC Object: ");
-        // debugPrintln(serializedRpcObject);
+        debugPrint("@@ [RPC] Complete RPC Object: ");
+        debugPrintln(serializedRpcObject);
 
         jsonrpc_process(serializedRpcObject.c_str(), serializedRpcObject.length(), sender, NULL, NULL);
     }
@@ -1237,7 +399,7 @@ void cApplication::ResetServerCredentials(void)
 {
     /*clear server settings*/
     debugPrintln("server settings cleared");
-    m_oMemory.putString("serverIP", m_oHttp.m_cDefaultServerIP);
+    m_oMemory.putString("serverIP", g_http_dev.default_server_ip);
     delay(1000);
     ESP.restart();
 }
@@ -1273,14 +435,14 @@ void cApplication::CheckForButtonEvent()
     // Countdown handler
     if (isButtonPressed)
     {
-        CountDownTimer = (now - ButtonPressedMillis) / 1000;
-        m_oDisp.DisplayGeneralVariables.Counter = CountDownTimer;
+        g_timers.countDownTimer = (now - ButtonState.buttonPressedMillis) / 1000;
+        m_oDisp.DisplayGeneralVariables.Counter = g_timers.countDownTimer;
     }
-    // debugPrintf(" CountDown: %d \n", CountDownTimer);
+    // debugPrintf(" CountDown: %d \n", g_timers.countDownTimer);
 
-    if (CountDownTimer >= TIMER_COUNTDOWN)
+    if (g_timers.countDownTimer >= TIMER_COUNTDOWN)
     {
-        CountDownTimer = 0;
+        g_timers.countDownTimer = 0;
         isButtonPressed = false;
         buzz = 10;
         sendFrameType = VDIFF_FRAME;
@@ -1325,8 +487,8 @@ void cApplication::CheckForButtonEvent()
             isButtonPressed = true;
             buzz = 5;
             debugPrintln(" Button Pressed CountDown Start");
-            m_oDisp.PopUpDisplayData.UploadStatus = 8;
-            ButtonPressedMillis = now;
+            m_oDisp.PopUpDisplayData.UploadStatus = FRAME_CAPTURE_COUNTDOWN;
+            ButtonState.buttonPressedMillis = now;
         }
     }
 }
@@ -1343,17 +505,6 @@ void cApplication::operateBuzzer(void)
     {
         m_oBsp.hooterOff();
         m_bButtonPressed = false;
-    }
-}
-
-void cApplication::inActivityChecker(void)
-{
-    /*if there is no activty of button press for 30 min go to sleep*/
-    if (iNoActivityCounter >= 18000)
-    {
-        debugPrintln("@@@ Going to sleep Mode.......ZZZZZZZZZZZZZZ");
-
-        esp_deep_sleep_start();
     }
 }
 
@@ -1438,14 +589,15 @@ void cApplication::print_restart_reason()
  *******************************************************************************/
 time_t cApplication::SendPing(void)
 {
-    char frame[256];
-    sprintf(frame, "{\"ReasonForPacket\":\"Ping\",\"siteId\":\"%s\",\"epochTime\":%ld,\"deviceId\":\"%s\"}", m_oConfig.m_cSiteId, m_oConfig.m_tEpoch, m_oConfig.m_cDeviceId);
-    debugPrintln(frame);
-    return m_oHttp.uploadPingFrame(frame);
+    return http_upload_ping_frame(&g_http_dev);
 }
+
+/*******************************************************************************
+ * Update pop up display
+ *******************************************************************************/
 void cApplication::updatePopUpDisplay(uint8_t uploadStatus, const char *timeStr, const char *pondName, float doValue)
 {
-    m_oDisp.PopUpDisplayData.UploadStatus = uploadStatus;
+    if (m_oDisp.PopUpDisplayData.UploadStatus != FRAME_CAPTURE_COUNTDOWN) m_oDisp.PopUpDisplayData.UploadStatus = uploadStatus;
     safeStrcpy(m_oDisp.PopUpDisplayData.time, timeStr, sizeof(m_oDisp.PopUpDisplayData.time));
     safeStrcpy(m_oDisp.PopUpDisplayData.pName, pondName, sizeof(m_oDisp.PopUpDisplayData.pName));
     m_oDisp.PopUpDisplayData.doValue = doValue;
@@ -1456,18 +608,18 @@ void cApplication::updatePopUpDisplay(uint8_t uploadStatus, const char *timeStr,
  ************************************************************/
 void cApplication::uploadframeFromBackUp(void)
 {
-    if (isOnline)
+    if (g_appState.isOnline)
     {
-        if (m_oHttp.m_bHttpBusy)
+        if (g_http_dev.is_busy)
         {
             debugPrintln("httpBusy :-(");
             return;
         }
-        if (!m_oHttp.m_bIsConnected || pingNow)
+        if (!g_http_dev.is_connected || pingNow)
         {
             pingNow = false;
             debugPrintln("Trying ping in BAK");
-            m_tPingEpoch = SendPing();
+            g_timers.pingEpoch = SendPing();
             return;
         }
         if (m_oBackupStore.available())
@@ -1489,7 +641,7 @@ void cApplication::uploadframeFromBackUp(void)
             debugPrintln(fdata);
             debugPrint(" [upload frame from backup][Data] :\n");
             debugPrintln(Data);
-            if (m_oHttp.uploadDataFrame(Data)) //
+            if (http_upload_data_frame(&g_http_dev, Data)) //
             {
                 updatePopUpDisplay(BACKUP_FRAME_UPLOAD_SUCCESS, doc["timeBuffer"], doc["PondName"], doc["do"]);
                 m_oBackupStore.moveToNextFile(&m_oFileSystem);
@@ -1519,11 +671,11 @@ void cApplication::updateJsonAndSendFrame(void)
     {
         // 1609439400 is Friday, January 1, 2021 12:00:00 AM GMT+05:30
         debugPrint("## Epoch Miss Match,Wrong Year : Sync RTC");
-        RTCSyncNow = true;
-        m_tPingEpoch = SendPing();
+        g_appState.rtcSyncNow = true;
+        g_timers.pingEpoch = SendPing();
         m_iFrameInProcess = NO_FRAME;
         sendFrameType = NO_FRAME;
-        m_oDisp.PopUpDisplayData.UploadStatus = (m_bIsGPS) ? FRAME_GEN_FAILED : FRAME_GEN_FAILED_NO_GPS;
+        m_oDisp.PopUpDisplayData.UploadStatus = (g_appState.isGPS) ? FRAME_GEN_FAILED : FRAME_GEN_FAILED_NO_GPS;
         return;
     }
 
@@ -1549,26 +701,27 @@ void cApplication::updateJsonAndSendFrame(void)
     Data["wifiSSId"] = WiFi.SSID();
     Data["rssi"] = WiFi.RSSI();
     Data["epoch"] = m_oConfig.m_tEpoch;
-    Data["operationMode"] = m_iOperationMode;
+    Data["operationMode"] = g_config.operationMode;  // Using struct
     Data["lat"] = m_oGps.mPosition.m_lat;
     Data["lng"] = m_oGps.mPosition.m_lng;
     Data["HDop"] = m_oGps.mPosition.hDop;
     Data["Satellites"] = m_oGps.mPosition.m_iSatellites;
+    Data["IsGpsValid"] = m_oGps.m_bIsValid;
     Data["rfId"] = "NO RFID";
-    Data["PondName"] = CurrntPondName;
-    Data["pondId"] = CurrentPondID;
-    Data["locationId"] = CurrentLocationId;
-    Data["localOffsetTimeInMin"] = TotalMinsOffSet;
-    Data["do"] = roundToDecimals(DoMglValue, 5);
-    Data["temp"] = TempVal;
-    Data["saturationPCT"] = roundToDecimals(DoSaturationVal, 5);
-    Data["salinity"] = CurrentPondSalinity;
+    Data["PondName"] = g_currentPond.CurrentPondName;  // Using struct
+    Data["pondId"] = g_currentPond.CurrentPondID;  // Using struct
+    Data["locationId"] = g_currentPond.CurrentLocationId;  // Using struct
+    Data["localOffsetTimeInMin"] = g_config.totalMinsOffSet;  // Using struct
+    Data["do"] = roundToDecimals(g_sensorData.doMglValue, 5);  // Using struct
+    Data["temp"] = g_sensorData.tempVal;  // Using struct
+    Data["saturationPCT"] = roundToDecimals(g_sensorData.doSaturationVal, 5);  // Using struct
+    Data["salinity"] = g_currentPond.CurrentPondSalinity;  // Using struct
     Data["BatPercent"] = m_oDisp.DisplayHeaderData.batteryPercentage;
     Data["isHistory"] = LIVE_FRAME;
     Data["Nearest"] = getNearestPondString();
     Data["timeBuffer"] = timebuffer;
     Data["UpTime"] = millis()/1000;
-    Data["LstPNameChkTime"] = LastPondNameCheckEpoch;
+    Data["LstPNameChkTime"] = g_timers.lastPondNameCheckEpoch;  // Using struct
     Data["PNameCheckingCntr"] = LoadedPondsWhileCheckingCurrentPond;
     /*****************************************************/
 
@@ -1582,11 +735,11 @@ void cApplication::updateJsonAndSendFrame(void)
     debugPrintln(" Document ready with data");
     /*Try to send frame if device is online or save to backup memory*/
     char frame[1400];
-    if (isOnline)
+    if (g_appState.isOnline)
     {
         serializeJson(Data, frame);
         debugPrint(frame);
-        if (!m_oHttp.uploadDataFrame(frame))
+        if (!http_upload_data_frame(&g_http_dev, frame))
         {
             Data["isHistory"] = HISTORY_FRAME;
             serializeJson(Data, frame);
@@ -1595,7 +748,6 @@ void cApplication::updateJsonAndSendFrame(void)
             updatePopUpDisplay(FRAME_UPLOAD_FAIL, Data["timeBuffer"], Data["PondName"], Data["do"]);
             if ((Data["DataError"] != PONDMAP_VALUE_TAKEN_BUT_ERROR) && (Data["PondName"][0] != '\0'))
             {
-
                 m_oPondConfig.updatePondStatus(Data["PondName"], PONDMAP_VALUE_FRAME_STORED_TO_BACKUP);
             }
         }
@@ -1625,7 +777,7 @@ void cApplication::updateJsonAndSendFrame(void)
     sendFrameType = NO_FRAME;
     /*Reset Timeout frame counter, Push Timeout Frame*/
     m_iFrameInProcess = NO_FRAME;
-    FoundPondName = false;
+    g_appState.foundPondName = false;
 }
 
 /*******************************************
@@ -1644,7 +796,7 @@ void cApplication::staLEDHandler(void)
         ckCnt = 0;
         rssi = WiFi.RSSI();
     }
-    if (isOnline && m_oHttp.m_bIsConnected)
+    if (g_appState.isOnline && g_http_dev.is_connected)
     {
         if (ledCnt >= ((rssi / 10) * (-1)))
         {
@@ -1688,7 +840,7 @@ void cApplication::AppTimerHandler100ms(void)
 //         hour -= 24;
 //     }
 //     // Format the time as "HH:MM"
-//     if(m_bIsGPS)
+//     if(g_appState.isGPS)
 //     {
 //         snprintf(timebuffer, 6, "%02d:%02d", hour, minutes);
 //     }
@@ -1726,7 +878,7 @@ void cApplication::convertTime(int TimeInMinsOffset)
         hour -= 12; // 13–23 → 1–11
     }
 
-    if (m_bIsGPS)
+    if (g_appState.isGPS)
     {
         snprintf(timebuffer, sizeof(timebuffer), "%02d:%02d", hour, minutes);
     }
@@ -1748,10 +900,9 @@ void cApplication::checkBattteryVoltage(void)
     int adcValue = analogRead(VBAT_ADC);
     float voltage = (adcValue / 4095.0) * referenceVoltage * (R1 + R2) / R2;
     voltage *= maxVoltage / referenceVoltage;
-    voltageValue = voltage;
-    m_oDisp.DisplayHeaderData.batteryPercentage = mapFloatToInt(voltageValue, 2.9, 4.2, 0, 100);
+    m_oDisp.DisplayHeaderData.batteryPercentage = constrain(mapFloatToInt(voltage, 2.8, 4.2, 0, 100), 0, 100);
     /*check whether the power supply is connected or not*/
-    m_bIsCharging = (m_oBsp.ioPinRead(BSP_PWR_DET)) ? true : false;
+    g_appState.isCharging = (m_oBsp.ioPinRead(BSP_PWR_DET)) ? true : false;
 }
 
 int cApplication::mapFloatToInt(float x, float in_min, float in_max, int out_min, int out_max)
@@ -1762,24 +913,24 @@ int cApplication::mapFloatToInt(float x, float in_min, float in_max, int out_min
 /*Reset the pond backup status map mornign adn evening*/
 void cApplication::ResetPondBackupStatusMap(int day, int hour)
 {
-    int TimeInHoursWithOffset = hour + (TotalMinsOffSet / 60);
+    int TimeInHoursWithOffset = hour + (g_config.totalMinsOffSet / 60);
     // Morning task (2:00 AM)
-    if (!morningCheckedThisBoot && TimeInHoursWithOffset >= MorningPondMapResetTime && (day != lastMorningDay))
+    if (!g_appState.morningCheckedThisBoot && TimeInHoursWithOffset >= g_config.morningPondMapResetTime && (day != g_config.lastMorningDay))
     {
         m_oMemory.putInt("morningDay", day);
-        lastMorningDay = day;
-        morningCheckedThisBoot = true;
+        g_config.lastMorningDay = day;
+        g_appState.morningCheckedThisBoot = true;
         debugPrintln(" Resetting the ponds status as time is 2AM");
-        ResetEntireMap = true;
+        g_appState.resetEntireMap = true;
     }
     // Evening task (2:00 PM)
-    if (!eveningCheckedThisBoot && TimeInHoursWithOffset >= EveningPondMapResetTime && (day != lastEveningDay))
+    if (!g_appState.eveningCheckedThisBoot && TimeInHoursWithOffset >= g_appState.eveningCheckedThisBoot && (day != g_config.lastEveningDay))
     {
         m_oMemory.putInt("eveDay", day);
-        lastEveningDay = day;
-        eveningCheckedThisBoot = true;
+        g_config.lastEveningDay = day;
+        g_appState.eveningCheckedThisBoot = true;
         debugPrintln(" Resetting the ponds status as time is 4PM");
-        ResetEntireMap = true;
+        g_appState.resetEntireMap = true;
     }
 }
 
@@ -1793,22 +944,35 @@ void cApplication::applicationTask(void)
     m_oBsp.wdtfeed();
     socketIO.loop();
 
-    if (m_bDoFota)
+    if (g_appState.doFota)
         return;
     /* Update the display every 100millisecond*/
     RunDisplay();
     CheckForButtonEvent();
 
-    if (m_bSendframe)
+    if (getSharedFlag(g_appState.sendFrame))
     {
+        debugPrintln("@@ [APP] sendFrame flag detected - preparing RPC response");
+        debugPrint("@@ [APP] sendResult content: ");
+        debugPrintln(sendResult);
+        
         String output = String("[\"rpcr\"," + String(sendResult) + "]");
-
+        
+        debugPrintln("@@ [APP] Sending RPC response via socketIO");
         // Send event
         socketIO.sendEVENT(output);
+        
+        debugPrintln("@@ [APP] RPC response sent");
         // Print the serialized JSON for debugging
         debugPrintln(output);
+        
+        debugPrintln("@@ [APP] Clearing sendResult buffer");
         memset(sendResult, 0, sizeof(sendResult));
-        m_bSendframe = false;
+        
+        debugPrintln("@@ [APP] Clearing sendFrame flag");
+        setSharedFlag(g_appState.sendFrame, false);
+        
+        debugPrintln("@@ [APP] RPC response handling complete");
     }
 
     /*Reset Device on receipt of devicedata ,like Clamps type Siteid,name*/
@@ -1827,13 +991,13 @@ void cApplication::applicationTask(void)
     /*one Sec task*/
     if (m_u8AppConter1Sec >= 10)
     {
-        convertTime(TotalMinsOffSet);
+        convertTime(g_config.totalMinsOffSet);
         m_oDisp.DisplayGeneralVariables.backUpFramesCnt = m_oBackupStore.countStoredFiles(&m_oFileSystem);
 
         static int sec5timer = 0;
         sec5timer++;
 
-        if (sec5timer >= 5 && (m_iOperationMode == EVENT_BASED_MODE) && !FoundPondName && (m_bIsGPS || Is_Simulated_Lat_Longs))
+        if (sec5timer >= 5 && (g_config.operationMode == EVENT_BASED_MODE) && !g_appState.foundPondName && (g_appState.isGPS || Is_Simulated_Lat_Longs))
         {
             // for (const auto &pair : m_oPondConfig.m_pondStatusMap) {
             //     Serial.printf("Pond: %s, isBoundariesAvailable: %d, BackupState: %d\n", pair.first.c_str(), pair.second.isBoundariesAvailable,pair.second.PondDataStatus);
@@ -1841,41 +1005,39 @@ void cApplication::applicationTask(void)
 
             long st = millis();
             GetCurrentPondName();
-            LastPondNameCheckEpoch = m_oConfig.m_tEpoch;
+            g_timers.lastPondNameCheckEpoch = m_oConfig.m_tEpoch;
             debugPrint(" TIme taken to get all the ponds data: ");debugPrintln(millis() - st);
             sec5timer = 0;
             Serial.print(" Nearest Ponds: ");Serial.println(getNearestPondString());
         }
 
         m_u8AppConter1Sec = 0;
-        m_iTimeOutFrameCounter++;
+        g_timers.timeOutFrameCounter++;
 
         checkBattteryVoltage();
         GetPondBoundaries();
 
-        // if (m_iOperationMode == EVENT_BASED_MODE)
-        //     rfidTask(); // rfid read and write the card data
         /*Read Time from GPS*/
         if (!Is_Simulated_Lat_Longs)
             m_oConfig.m_tEpoch = m_oGps.Epoch;
-        if ((isOnline == false) || (m_oHttp.m_bIsConnected == false))
+        if ((g_appState.isOnline == false) || (g_http_dev.is_connected == false))
         {
-            rebootAfterOfflineCnt++;
-            m_iNetCheckCounter++;
+            g_timers.rebootAfterOfflineCnt++;
+            g_timers.netCheckCounter++;
         }
         else
         {
-            rebootAfterOfflineCnt = 0;
-            m_iNetCheckCounter = 0;
+            g_timers.rebootAfterOfflineCnt = 0;
+            g_timers.netCheckCounter = 0;
         }
 
-        if (m_bIsGPS)
+        if (g_appState.isGPS)
             ResetPondBackupStatusMap(m_oGps.GpsDay, m_oGps.GpsHour);
         /*Reset the entire map*/
-        if (ResetEntireMap)
+        if (g_appState.resetEntireMap)
         {
-            Serial.println("[DEBUG] ResetEntireMap flag detected → resetting...");
-            ResetEntireMap = false;
+            Serial.println("[DEBUG] g_appState.resetEntireMap flag detected → resetting...");
+            g_appState.resetEntireMap = false;
             m_oPondConfig.resetAllPondDataStatus();
         }
     }
@@ -1884,6 +1046,7 @@ void cApplication::applicationTask(void)
 
 void cApplication::GpsTask(void)
 {
+    m_oBsp.wdtfeed();
     /* Run the GPS function very second to encode lats, longs */
     m_oGps.gpstask();
 }
@@ -1924,54 +1087,13 @@ void cApplication::GetCurrentPondName(void)
     finalizeNearestPonds();
     LoadedPondsWhileCheckingCurrentPond = cntr;
 }
-/*********************************************************************************************
- * Get the pond name from RFID tag data
- *********************************************************************************************/
-String cApplication::GetPondNameFromRFID(String pondLocationFromCard, const char *jsonString)
-{
-    StaticJsonDocument<4096> doc; // Adjust size based on actual JSON size
-
-    DeserializationError error = deserializeJson(doc, jsonString);
-    if (error)
-    {
-        debugPrint("JSON deserialization failed: ");
-        debugPrintln(error.c_str());
-        return "";
-    }
-
-    JsonArray configArray = doc["config"].as<JsonArray>();
-    for (JsonVariant entry : configArray)
-    {
-        String line = entry.as<String>();
-        int firstPipe = line.indexOf('|');
-        int secondPipe = line.indexOf('|', firstPipe + 1);
-        int thirdPipe = line.indexOf('|', secondPipe + 1);
-        int FourthPipe = line.indexOf('|', thirdPipe + 1);
-
-        String pondName = line.substring(firstPipe + 1, secondPipe);
-        String location = line.substring(secondPipe + 1, thirdPipe);
-        String Sal = line.substring(thirdPipe + 1, FourthPipe);
-
-        CurrentPondSalinity = atoi(Sal.c_str());
-
-        if (location == pondLocationFromCard)
-        {
-            FoundPondName = true;
-            debugPrint(" pond name found using the pond location from RFID tag: ");
-            debugPrintln(pondName);
-            return pondName;
-        }
-    }
-
-    return ""; // Not found
-}
 
 /*******************************************************************************************************************************
  * Function to get the pond boundaries whenever there is version change i.e change of some pond details or a new pond is added
  ********************************************************************************************************************************/
 void cApplication::GetPondBoundaries(void)
 {
-    if (m_oPondConfig.m_bGetPondBoundaries && m_oHttp.m_bIsConnected)
+    if (m_oPondConfig.m_bGetPondBoundaries && g_http_dev.is_connected)
     {
         int length = m_oPondConfig.updatedPondIds.size();
         if (!length)
@@ -2017,32 +1139,31 @@ void cApplication::ResetHandler(void)
 
 void cApplication::AssignDataToDisplayStructs()
 {
-    safeStrcpy(m_oDisp.DisplayLeftPanelData.pName, CurrntPondName, sizeof(m_oDisp.DisplayLeftPanelData.pName));
+    safeStrcpy(m_oDisp.DisplayLeftPanelData.pName, g_currentPond.CurrentPondName, sizeof(m_oDisp.DisplayLeftPanelData.pName));  // Using struct
     safeStrcpy(m_oDisp.DisplayLeftPanelData.nearestPonds, String(getNearestPondString()).c_str(), sizeof(m_oDisp.DisplayLeftPanelData.nearestPonds));
     m_oDisp.DisplayHeaderData.Satellites = m_oGps.mPosition.m_iSatellites;
     m_oDisp.DisplayHeaderData.rssi = WiFi.RSSI();
     /* Check whether the GPS Coordinates are found or not*/
-    m_bIsGPS = ((m_oGps.mPosition.m_lat != 0.0) && (m_oGps.mPosition.m_lng != 0.0)) ? true : false;
-    if (Is_Simulated_Lat_Longs)
-        m_bIsGPS = ((SimulatedLat != 0.0) && (SimulatedLongs != 0.0)) ? true : false;
-    m_oDisp.DisplayHeaderData.LocationStatus = m_bIsGPS;
-    m_oDisp.DisplayFooterData.isHttpConnected = m_oHttp.m_bIsConnected;
+    // g_appState.isGPS = ((m_oGps.mPosition.m_lat != 0.0) && (m_oGps.mPosition.m_lng != 0.0)) ? true : false;
+    // if (Is_Simulated_Lat_Longs)
+    //     g_appState.isGPS = ((SimulatedLat != 0.0) && (SimulatedLongs != 0.0)) ? true : false;
+    g_appState.isGPS = m_oGps.m_bIsValid;
+    m_oDisp.DisplayHeaderData.LocationStatus = g_appState.isGPS;
+    m_oDisp.DisplayFooterData.isHttpConnected = g_http_dev.is_connected;
     /*Footer Data*/
     m_oDisp.DisplayFooterData.FooterType = m_oDisp.PopUpDisplayData.UploadStatus; // TODO : to handle the display updation by comparing the structure
 
     strncpy(m_oDisp.DisplayFooterData.RouterMac, String(WiFi.BSSIDstr()).c_str(), sizeof(m_oDisp.DisplayFooterData.RouterMac));
 }
+
 /****************************************************************************************************
  * Function to run the display and handle send frame
  ****************************************************************************************************/
 void cApplication::RunDisplay(void)
 {
     AssignDataToDisplayStructs();
-
     unsigned long st = millis();
     m_oDisp.renderDisplay(currentScreen, &m_oPondConfig);
-    // Serial.print(" Unsigned : ");
-    // Serial.println(millis() - st);
 }
 
 // TODO: seperate function for GPS and read the values every single time and update the gloabal variables in app.cpp instead from gps.cpp
@@ -2091,9 +1212,9 @@ void printSystemInfo()
  ****************************************************************************************************/
 void cApplication::commandParseTask(void)
 {
-    if (m_bDoFota)
+    if (g_appState.doFota)
     {
-        m_oDisp.printFOTA(m_oHttp.currprogress);
+        m_oDisp.printFOTA(g_http_dev.curr_progress);
         return;
     }
     // printSystemInfo();
@@ -2128,10 +1249,12 @@ void cApplication::commandParseTask(void)
 
     if (validSensorData)
     {
-        DoMglValue = m_oSensor.m_fDoMgl;
-        DoSaturationVal = m_oSensor.m_fDo;
-        TempVal = m_oSensor.m_fTemp;
+        // Update sensor data struct
+        g_sensorData.doMglValue = m_oSensor.m_fDoMgl;
+        g_sensorData.doSaturationVal = m_oSensor.m_fDo;
+        g_sensorData.tempVal = m_oSensor.m_fTemp;
 
+        // Update display
         m_oDisp.DisplayLeftPanelData.DoSaturationValue = roundToDecimals(m_oSensor.m_fDo, 2);
         m_oDisp.DisplayLeftPanelData.DoValueMgL = roundToDecimals(m_oSensor.m_fDoMgl, 2);
         m_oDisp.DisplayLeftPanelData.TempValue = roundToDecimals(m_oSensor.m_fTemp, 1);
@@ -2141,11 +1264,18 @@ void cApplication::commandParseTask(void)
     // Reset working values when sensor has been disconnected for too long, this prevents loss of valid data due to temporary communication issues
     if (sensorFailCntr >= 5)
     {
-        debugPrintln(" [App][commandParseTask] Sensor disconnected - resetting working values");
+        // debugPrintln(" [App][commandParseTask] Sensor disconnected - resetting working values");
         m_oDisp.DisplayGeneralVariables.IsSensorConnected = true;
-        TempVal = m_oDisp.DisplayLeftPanelData.TempValue = 0.0;
-        DoSaturationVal = m_oDisp.DisplayLeftPanelData.DoSaturationValue = 0;
-        DoMglValue = m_oDisp.DisplayLeftPanelData.DoValueMgL = 0;
+        
+        // Reset sensor data struct
+        g_sensorData.tempVal = 0.0;
+        g_sensorData.doSaturationVal = 0.0;
+        g_sensorData.doMglValue = 0.0;
+        
+        // Reset display
+        m_oDisp.DisplayLeftPanelData.TempValue = 0.0;
+        m_oDisp.DisplayLeftPanelData.DoSaturationValue = 0;
+        m_oDisp.DisplayLeftPanelData.DoValueMgL = 0;
         m_oDisp.DisplayLeftPanelData.Salinity = 0.0;
         sensorFailCntr = 0;
     }
@@ -2188,18 +1318,20 @@ void cApplication::finalizeNearestPonds()
     // Check if the device is inside a pond
     if (allPondsWithDistance[0].distance <= INSIDE_POND_TOLERANCE)
     {
-        strncpy(CurrntPondName, allPondsWithDistance[0].name, sizeof(CurrntPondName));
-        Serial.print("Current Pond Name: "); Serial.println(CurrntPondName);
-        CurrntPondName[sizeof(CurrntPondName) - 1] = '\0';
+        // Update pond info struct
+        strncpy(g_currentPond.CurrentPondName, allPondsWithDistance[0].name, sizeof(g_currentPond.CurrentPondName));
+        Serial.print("Current Pond Name: "); Serial.println(g_currentPond.CurrentPondName);
+        g_currentPond.CurrentPondName[sizeof(g_currentPond.CurrentPondName) - 1] = '\0';
 
         for (int j = 0; j < m_oPondConfig.m_u8TotalNoOfPonds; j++)
         {
-            if (strcmp(m_oPondConfig.m_oPondList[j].m_cPondname, CurrntPondName) == 0)
+            if (strcmp(m_oPondConfig.m_oPondList[j].m_cPondname, g_currentPond.CurrentPondName) == 0)
             {
-                // Found the pond — copy details
-                strcpy(CurrentPondID, m_oPondConfig.m_oPondList[j].m_cPondId);
-                strcpy(CurrentLocationId, m_oPondConfig.m_oPondList[j].m_cLocationID);
-                m_oSensor.m_fSalinity = CurrentPondSalinity = m_oPondConfig.m_oPondList[j].m_iSalinity;
+                // Found the pond — copy details to struct
+                strcpy(g_currentPond.CurrentPondID, m_oPondConfig.m_oPondList[j].m_cPondId);
+                strcpy(g_currentPond.CurrentLocationId, m_oPondConfig.m_oPondList[j].m_cLocationID);
+                g_currentPond.CurrentPondSalinity = m_oPondConfig.m_oPondList[j].m_iSalinity;
+                m_oSensor.m_fSalinity = g_currentPond.CurrentPondSalinity;
             }
         }
         if (m_oSensor.m_fSalinity)
@@ -2211,11 +1343,13 @@ void cApplication::finalizeNearestPonds()
     }
     else
     {
-        CurrntPondName[0] = '\0';
-        strcpy(CurrntPondName, "");
-        strcpy(CurrentLocationId, "");
-        strcpy(CurrentPondID, "");
-        m_oSensor.m_fSalinity = CurrentPondSalinity = 0;
+        // Clear pond info struct
+        g_currentPond.CurrentPondName[0] = '\0';
+        strcpy(g_currentPond.CurrentPondName, "");
+        strcpy(g_currentPond.CurrentLocationId, "");
+        strcpy(g_currentPond.CurrentPondID, "");
+        g_currentPond.CurrentPondSalinity = 0;
+        m_oSensor.m_fSalinity = 0;
         debugPrintln("There is No pond for the current coordinates");
     }
 
@@ -2256,7 +1390,7 @@ String cApplication::getNearestPondString()
         return "No Ponds in range";
 
     // Case 1: Inside a pond
-    if (strlen(CurrntPondName) > 0)
+    if (strlen(g_currentPond.CurrentPondName) > 0)  // Using struct
     {
         String msg;
 
@@ -2375,12 +1509,12 @@ void cApplication::checkWifiConnection(void)
 {
     if (WiFi.status() == WL_CONNECTED)
     {
-        if (!isOnline)
+        if (!g_appState.isOnline)
             onConnected();
     }
     else
     {
-        if (isOnline)
+        if (g_appState.isOnline)
             onDisConnected();
     }
 }
@@ -2395,13 +1529,12 @@ void cApplication::frameHandlingTask(void)
 
     m_oBsp.wdtfeed();
     /*return from here when fota is running*/
-    if (m_bDoFota)
+    if (g_appState.doFota)
     {
         return;
     }
     checkWifiConnection();
 
-    debugPrint("  m_iFrameInProcess:   ");debugPrint(m_iFrameInProcess);debugPrint("   sendFrameType:   ");debugPrintln(sendFrameType);
     /*Update and send frame*/
     if ((m_iFrameInProcess == NO_FRAME) && (sendFrameType != NO_FRAME))
     {
@@ -2411,14 +1544,14 @@ void cApplication::frameHandlingTask(void)
     m_oBsp.wdtfeed();
 
     /*Check for multiple Wifi Networks when device is offline every 15sec*/
-    if (m_iNetCheckCounter > 15)
+    if (g_timers.netCheckCounter > 15)
     {
-        m_iNetCheckCounter = 0;
+        g_timers.netCheckCounter = 0;
         reconnectWifi();
     }
 
     static int cntr = 0;
-    if (cntr >= 50 && m_oHttp.m_bIsConnected)
+    if (cntr >= 50 && g_http_dev.is_connected)
     {
         SendPing();
         cntr = 0;
@@ -2433,14 +1566,14 @@ void cApplication::frameHandlingTask(void)
         uploadframeFromBackUp();
     }
 
-    if (m_iTimeOutFrameCounter > 5 * 60 && sendFrameType == NO_FRAME && strcmp(CurrentPondID, "") == 0)
+    if (g_timers.timeOutFrameCounter > 5 * 60 && sendFrameType == NO_FRAME && strcmp(g_currentPond.CurrentPondID, "") == 0)
     {
         debugPrintln("@ generating T T T frame");
-        m_iTimeOutFrameCounter = 0;
+        g_timers.timeOutFrameCounter = 0;
         sendFrameType = TOUT_FRAME;
     }
 
-    if (m_bGetConfig && isOnline && m_oHttp.m_bIsConnected)
+    if (g_appState.getConfig && g_appState.isOnline && g_http_dev.is_connected)
     {
         Serial.println(" Getting configuration initially");
         getConfigurationDeviceId();
@@ -2458,13 +1591,13 @@ void cApplication::fotaTask(void)
         return;
 
     m_oBsp.wdtfeed();
-    if (m_bDoFota)
+    if (g_appState.doFota)
     {
         m_oBsp.wdtfeed();
         sendFrameType = NO_FRAME;
         debugPrintln("Calling performOTA()");
         m_oDisp.ClearDisplay();
-        uint8_t u8OtaResponse = m_oHttp.performOTA(&m_oBsp);
+        uint8_t u8OtaResponse = http_perform_ota(&g_http_dev, &m_oBsp);
         switch (u8OtaResponse)
         {
         case 0:
@@ -2474,7 +1607,7 @@ void cApplication::fotaTask(void)
             debugPrintln("OTA fail due to http busy, retrying...");
             break;
         default:
-            m_bDoFota = false;
+            g_appState.doFota = false;
             break;
         }
     }
@@ -2486,9 +1619,9 @@ void cApplication::CheckAndSyncRTC(void)
 {
     m_oBsp.wdtfeed();
     /*Check and sync RTC every 10 MIN */
-    if (m_iRtcSyncCounter >= 600 || RTCSyncNow)
+    if (m_iRtcSyncCounter >= 600 || g_appState.rtcSyncNow)
     {
-        if (isOnline)
+        if (g_appState.isOnline)
         {
             debugPrintln("@@ Check and Sync RTC");
             /*Get server epoch in Local time*/
@@ -2514,7 +1647,7 @@ void cApplication::CheckAndSyncRTC(void)
                 /*If Rtc sync is failed it will try to sync in one Min again*/
                 m_iRtcSyncCounter = 540;
             }
-            RTCSyncNow = false;
+            g_appState.rtcSyncNow = false;
         }
         else
         {
@@ -2523,48 +1656,6 @@ void cApplication::CheckAndSyncRTC(void)
     }
 }
 
-void cApplication::rfidTask(void)
-{
-    m_oBsp.wdtfeed();
-    /*checks weather the RFID is available or not*/
-    bool isCardFound = m_oRfid.isTagPresent();
-    // debugPrintf("isCardFound %d\n", isCardFound);
-    if (isCardFound) //
-    {
-        buzz = 5;
-        // showReadWriteCycle = false;
-        char cardPayload[716] = {'\0'}; // max data stored in a card is 716 bytes
-        /*reads the data from the card and saves the data in the variable sent as parameter*/
-        m_oRfid.readDataFromCard(cardPayload);
-        if (strcmp(cardPayload, "\0"))
-        {
-            debugPrintln("data read succesfully: ");
-            debugPrintln(cardPayload);
-
-            int FileSize = m_oFileSystem.getFileSize(FILENAME_IDSCONFIG);
-            char FileData[FileSize];
-            int ret = m_oFileSystem.readFile(FILENAME_IDSCONFIG, FileData);
-            if (ret)
-            {
-                debugPrintln("[App][RFIDTASK]: There is some data in the file going to find the pond name in the file");
-                String PondCurrname = GetPondNameFromRFID(cardPayload, FileData);
-                strcpy(CurrntPondName, PondCurrname.c_str());
-            }
-            else
-            {
-                debugPrintln(" NO data in the File or error occured while reading the file");
-            }
-        }
-        else
-        {
-            debugPrintln("card read failed");
-        }
-    }
-    else
-    {
-        // debugPrintln("old card detected");
-    }
-}
 
 /****************************************************************
  * Function to get the devic configuration from the server
@@ -2578,9 +1669,10 @@ uint8_t cApplication::getConfigurationDeviceId(void)
     String macAdress = WiFi.macAddress();
     // String macAdress = "10:06:1C:07:D9:F4";//WARNING
     sprintf(deviceid, "deviceId=%s", String(macAdress).c_str());
-    if (m_oHttp.getConfig(deviceid))
+    if (http_get_config(&g_http_dev, deviceid))
     {
-        String responseData = m_oHttp.m_sPayload;
+        const char *payload = http_get_payload(&g_http_dev);
+        String responseData = String(payload ? payload : "");
         debugPrintln(responseData);
         int PayLoadSize = responseData.length();
         Serial.printf(" PayLoad Size : %d \n", PayLoadSize);
@@ -2592,12 +1684,12 @@ uint8_t cApplication::getConfigurationDeviceId(void)
             /*read operationMode*/
             if (configInfo.containsKey("operationMode"))
             {
-                m_iOperationMode = configInfo["operationMode"];
-                debugPrintf("@@ operationMode found %d\n", m_iOperationMode);
+                g_config.operationMode = configInfo["operationMode"];
+                debugPrintf("@@ operationMode found %d\n", g_config.operationMode);
             }
             else
             {
-                m_iOperationMode = EVENT_BASED_MODE;
+                g_config.operationMode = EVENT_BASED_MODE;
                 debugPrintln("@@ operationMode not found");
             }
             /* Read Pond Setting Version */
@@ -2647,7 +1739,7 @@ uint8_t cApplication::getConfigurationDeviceId(void)
             {
                 Serial.println(" Version not changed...");
             }
-            m_bGetConfig = false;
+            g_appState.getConfig = false;
         }
         else
         {
@@ -2676,10 +1768,11 @@ uint8_t cApplication::getConfigurationPondBoundaries(const char *pondID, const c
     uint8_t ret = 0;
     char pondid[256];
     sprintf(pondid, "pondId=%s", pondID);
-    if (m_oHttp.getPondBoundaries(pondid))
+    if (http_get_pond_boundaries(&g_http_dev, pondid))
     {
-        String responseData = m_oHttp.m_sPayload;
-        debugPrintln(m_oHttp.m_sPayload);
+        const char *payload = http_get_payload(&g_http_dev);
+        String responseData = String(payload ? payload : "");
+        debugPrintln(payload);
         int Size = responseData.length();
         if (Size > 3000)
             return 0;
@@ -2720,15 +1813,15 @@ void cApplication::readDeviceConfig(void)
 {
     String sWifiSSID = m_oMemory.getString("wifiSsid", "Nextaqua_EAP110");         // get wifi SSID
     String sWifiPASS = m_oMemory.getString("wifiPass", "Infi@2016");               // get wifi password
-    String sSeverIP = m_oMemory.getString("serverIP", m_oHttp.m_cDefaultServerIP); // get server IP
-    TotalMinsOffSet = m_oMemory.getInt("LocalMins", 180);                          // get offset time
-    m_iDataFrequencyInterval = m_oMemory.getInt("interval", 5);                    // To post the data that frequently
+    String sSeverIP = m_oMemory.getString("serverIP", g_http_dev.default_server_ip); // get server IP
+    g_config.totalMinsOffSet = m_oMemory.getInt("LocalMins", 180);                 // get offset time
+    g_config.dataFrequencyInterval = m_oMemory.getInt("interval", 5);              // To post the data that frequently
 
     safeStrcpy(m_cWifiPass, sWifiPASS.c_str(), sizeof(m_cWifiPass));
     safeStrcpy(m_cWifiSsid, sWifiSSID.c_str(), sizeof(m_cWifiSsid));
-    safeStrcpy(m_oHttp.m_cServerIP, sSeverIP.c_str(), sizeof(m_oHttp.m_cServerIP));
+    safeStrcpy(g_http_dev.server_ip, sSeverIP.c_str(), sizeof(g_http_dev.server_ip));
 
-    safeStrcpy(m_oDisp.DisplayFooterData.ServerIp, m_oHttp.m_cServerIP, sizeof(m_oDisp.DisplayFooterData.ServerIp));
+    safeStrcpy(m_oDisp.DisplayFooterData.ServerIp, g_http_dev.server_ip, sizeof(m_oDisp.DisplayFooterData.ServerIp));
     safeStrcpy(m_oDisp.DisplayGeneralVariables.WiFiSsid, m_cWifiSsid, sizeof(m_oDisp.DisplayGeneralVariables.WiFiSsid));
     safeStrcpy(m_oDisp.DisplayGeneralVariables.WiFiPass, m_cWifiPass, sizeof(m_oDisp.DisplayGeneralVariables.WiFiPass));
 
@@ -2737,19 +1830,19 @@ void cApplication::readDeviceConfig(void)
     debugPrint("wifiPass : ");
     debugPrintln(m_cWifiPass);
     debugPrint("serverIP : ");
-    debugPrintln(m_oHttp.m_cServerIP);
+    debugPrintln(g_http_dev.server_ip);
     debugPrint("offsetMin : ");
-    debugPrintln(TotalMinsOffSet);
+    debugPrintln(g_config.totalMinsOffSet);
     debugPrint("interval : ");
-    debugPrintln(m_iDataFrequencyInterval);
+    debugPrintln(g_config.dataFrequencyInterval);
 
-    lastMorningDay = m_oMemory.getInt("morningDay", -1);
-    lastEveningDay = m_oMemory.getInt("eveDay", -1);
+    g_config.lastMorningDay = m_oMemory.getInt("morningDay", -1);
+    g_config.lastEveningDay = m_oMemory.getInt("eveDay", -1);
 
-    MorningPondMapResetTime = m_oMemory.getInt("MrngTime", 2);
-    EveningPondMapResetTime = m_oMemory.getInt("EvngTime", 14);
-    debugPrintf("\n Last Morning Date : %d \n", lastMorningDay);
-    debugPrintf("\n Last Evening Date : %d \n", lastEveningDay);
+    g_config.morningPondMapResetTime = m_oMemory.getInt("MrngTime", 2);
+    g_appState.eveningCheckedThisBoot = m_oMemory.getInt("EvngTime", 14);
+    debugPrintf("\n Last Morning Date : %d \n", g_config.lastMorningDay);
+    debugPrintf("\n Last Evening Date : %d \n", g_config.lastEveningDay);
 
     /*load DO Configuration*/
     m_oPondConfig.loadPondConfig();
@@ -2784,6 +1877,18 @@ int cApplication::appInit(void)
     Serial.begin(115200);
     debugPrint("millis after serial begin: ");
     debugPrintln(millis());
+    
+    // Create mutex for shared variable protection
+    xSharedVarMutex = xSemaphoreCreateMutex();
+    if (xSharedVarMutex == NULL)
+    {
+        debugPrintln("ERROR: Failed to create shared variable mutex!");
+    }
+    else
+    {
+        debugPrintln("Shared variable mutex created successfully");
+    }
+    
     m_oDisp.begin();
     /*print the wakeup reason when code restarts*/
     print_wakeup_reason();
@@ -2796,6 +1901,7 @@ int cApplication::appInit(void)
      * Change the baudrates based on the GPS module Connected.
      * **********************************************************/
     Serial2.begin(38400, SERIAL_8N1, 26, 27);
+    m_oGps.gpsInit(&Serial2);
     /*Modbus and sensor initialization*/
     m_oSensor.sensorInit(Serial1);
     char hostName[50] = {0};
@@ -2814,8 +1920,17 @@ int cApplication::appInit(void)
     m_oBackupStore.InitilizeBS(&m_oFileSystem);
     /*NVS memory initialization*/
     m_oMemory.begin("deviceMemory", false);
-    /*read device memory and load Do config*/
+    
+    /*HTTP device initialization with ops structure - MUST be before readDeviceConfig*/
+    if (http_device_init(&g_http_dev, "ESP32_HTTP", &esp32_http_ops) != 0) {
+        debugPrintln("HTTP device init failed!");
+    } else {
+        debugPrintln("HTTP device initialized with default server");
+    }
+    
+    /*read device memory and load Do config - this will update g_http_dev.server_ip*/
     readDeviceConfig();
+    
     /*Wifi initailization */
     wifiInitialization();
     /*Generate the URI path with esp32 MacAddress*/
@@ -2823,7 +1938,7 @@ int cApplication::appInit(void)
     /*Init Socket Connection*/
     socketIO.setReconnectInterval(10000);
     socketIO.setExtraHeaders("Authorization: 1234567890");
-    socketIO.begin(m_oHttp.m_cServerIP, m_oHttp.m_u16ServerPort, m_cUriPath, protocol);
+    socketIO.begin(g_http_dev.server_ip, g_http_dev.server_port, m_cUriPath, protocol);
     socketIO.onEvent(socketIOEvent);
     /*Bsp GPIO Initalization*/
     m_oBsp.gpioInitialization();
@@ -2833,8 +1948,6 @@ int cApplication::appInit(void)
     allRpcInit();
     /*I2C initialization*/
     m_oBsp.i2cInitialization();
-    /*Rfid initialization I2c mode*/
-    m_oRfid.init();
     debugPrintln("initialization completed :-)");
     /*Iniatlization for application timer*/
     AppTimer.attach(0.1, +[](cApplication *App)
@@ -2846,8 +1959,10 @@ int cApplication::appInit(void)
     safeStrcpy(mac_id, String(macID).c_str(), sizeof(mac_id));
     char FV[10];
     String firmVersion = String(FW_VERSION) + "." + String(BOARD_VERSION) + "." + "0";
+    String FirmwaverVersionForDisplay = "v" + String(FW_VERSION);
 
     safeStrcpy(m_oDisp.DisplayGeneralVariables.FirmwareVersion, String(firmVersion).c_str(), sizeof(m_oDisp.DisplayGeneralVariables.FirmwareVersion));
+    safeStrcpy(m_oDisp.DisplayHeaderData.FWVerison, String(FirmwaverVersionForDisplay).c_str(), sizeof(m_oDisp.DisplayHeaderData.FWVerison));
     safeStrcpy(m_oDisp.DisplayFooterData.DeviceMac, mac_id, sizeof(m_oDisp.DisplayFooterData.DeviceMac));
     delay(200);
     m_oDisp.ClearDisplay();
@@ -3061,19 +2176,19 @@ String htmlForm(void)
  * ************************************************************************************************* */
 void cApplication::startAccessPoint()
 {
-    Myname = getAPSSIDFromMAC();
+    g_smartConfig.myName = getAPSSIDFromMAC();
     IPAddress apIP(192, 168, 4, 1);
     IPAddress subnet(255, 255, 255, 0);
 
     WiFi.mode(WIFI_AP);
     WiFi.softAPConfig(apIP, apIP, subnet);
-    WiFi.softAP(Myname.c_str(), MyPassKey.c_str());
+    WiFi.softAP(g_smartConfig.myName.c_str(), g_smartConfig.myPassKey.c_str());
 
     dnsServer.start(DNS_PORT, "*", apIP);
 
     debugPrintln("AP Mode started.");
     Serial.print("SSID: ");
-    Serial.println(Myname);
+    Serial.println(g_smartConfig.myName);
     debugPrintln("Go to http://192.168.4.1 or connect to WiFi for redirect");
 }
 
@@ -3087,14 +2202,14 @@ void cApplication::startWebServer()
 
     server.on("/save", HTTP_POST, []()
               {
-    NewSsid = server.arg("ssid");
-    NewPassword = server.arg("password");
+    g_smartConfig.newSsid = server.arg("ssid");
+    g_smartConfig.newPassword = server.arg("password");
 
-    IsRecievedConfig = true;
-    reBoot = millis();
+    g_smartConfig.isReceivedConfig = true;
+    g_smartConfig.rebootTime = millis();
     
-    m_oMemory.putString("wifiSsid", NewSsid);
-    m_oMemory.putString("wifiPass", NewPassword);
+    m_oMemory.putString("wifiSsid", g_smartConfig.newSsid);
+    m_oMemory.putString("wifiPass", g_smartConfig.newPassword);
 
     server.sendHeader("Location", "/done", true);
     server.send(302, "text/plain", ""); });
@@ -3105,8 +2220,8 @@ void cApplication::startWebServer()
                   ".tick { font-size:48px; color:green; }</style></head><body>"
                   "<div class='tick'>&#10004;</div>"
                   "<h2>Saved! Rebooting...</h2>"
-                  "<p>SSID: <strong>" + NewSsid + "</strong></p>"
-                  "<p>Password: <strong>" + NewPassword + "</strong></p>"
+                  "<p>SSID: <strong>" + g_smartConfig.newSsid + "</strong></p>"
+                  "<p>Password: <strong>" + g_smartConfig.newPassword + "</strong></p>"
                   "</body></html>";
     server.send(200, "text/html", html); });
     // Captive portal auto-redirect routes
@@ -3130,7 +2245,7 @@ void cApplication::startWebServer()
  ************************************************************************************/
 void cApplication::SmartConfig(void)
 {
-    SmartConfigTimeoutMillis = millis(); // Timeout to restart the device after entering smart config
+    g_smartConfig.timeoutMillis = millis(); // Timeout to restart the device after entering smart config
     WiFi.disconnect();
     startAccessPoint();
     startWebServer();
@@ -3143,21 +2258,21 @@ void cApplication::SmartConfigTask(void)
 {
     if (m_oDisp.m_bSmartConfigMode)
     {
-        if (!GoToSmartConfig)
+        if (!g_smartConfig.GoToSmartConfig)
         {
             SmartConfig();
-            GoToSmartConfig = true;
+            g_smartConfig.GoToSmartConfig = true;
         }
         server.handleClient();
         dnsServer.processNextRequest();
         /*Display smart config screens before and after configuration*/
-        if (!IsRecievedConfig)
+        if (!g_smartConfig.isReceivedConfig)
         {
             static int screen1 = 0;
             if (screen1 < 1)
             {
                 delay(500);
-                m_oDisp.DisplaySmartConfig(Myname, MyPassKey);
+                m_oDisp.DisplaySmartConfig(g_smartConfig.myName, g_smartConfig.myPassKey);
                 screen1 = 1;
             }
         }
@@ -3165,20 +2280,20 @@ void cApplication::SmartConfigTask(void)
         {
             static int y = 0;
             y++;
-            if (y >= 100)
+            if (y >= 10)
             {
-                m_oDisp.DisplaySaveSmartConfig(NewSsid, NewPassword);
+                m_oDisp.DisplaySaveSmartConfig(g_smartConfig.newSsid, g_smartConfig.newPassword);
             }
         }
     }
     // Restart the device, if credentials are set
-    if (IsRecievedConfig && (millis() - reBoot) / 1000 >= 5)
+    if (g_smartConfig.isReceivedConfig && (millis() - g_smartConfig.rebootTime) / 1000 >= 5)
     {
         debugPrintln(" Reboot time completed, i am restarting the device...........");
         ESP.restart();
     }
     // Restart the device if the smart config timeout is greater than 10 mins
-    if (m_oDisp.m_bSmartConfigMode && (millis() - SmartConfigTimeoutMillis) / 1000 >= 600)
+    if (m_oDisp.m_bSmartConfigMode && (millis() - g_smartConfig.timeoutMillis) / 1000 >= 600)
     {
         debugPrintln("[ERROR]:Smart config timeout exceeded, device will be restarted");
         ESP.restart();

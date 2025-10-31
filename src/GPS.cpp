@@ -20,10 +20,15 @@ CGps::CGps() {}
 /* Destruct */
 CGps::~CGps() {}
 
+void CGps::gpsInit(Stream *serialHandle)
+{
+  _gpsSerial = serialHandle;
+}
+
 /*****************************************
  * Conver GPS time to Ecpoch
  *****************************************/
-time_t ConvertToEpoch(uint16_t year, uint8_t mon, uint8_t date, uint8_t hour, uint8_t min, uint8_t sec)
+time_t CGps::ConvertToEpoch(uint16_t year, uint8_t mon, uint8_t date, uint8_t hour, uint8_t min, uint8_t sec)
 {
   uint32_t t;
   // January and February are counted as months 13 and 14 of the previous year
@@ -46,43 +51,56 @@ time_t ConvertToEpoch(uint16_t year, uint8_t mon, uint8_t date, uint8_t hour, ui
   return (time_t)(t);
 }
 
+
 void CGps::gpstask(void)
 {
+  static String nmeaLine;
   static bool serialStarted = false;
-  while (Serial2.available() > 0)
+  while (_gpsSerial->available() > 0)
   {
     serialStarted = true;
-    gps1.encode(Serial2.read());
+    char c = _gpsSerial->read();
+    gps1.encode(c);
+
     if (gps1.location.isUpdated() || gps1.time.isUpdated())
     {
       /*Lats and Longs*/
       mPosition.m_lat = gps1.location.lat();
       mPosition.m_lng = gps1.location.lng();
-      /*HDop and Satellites*/
-      mPosition.hDop = gps1.hdop.hdop();
-      if (gps1.satellites.isUpdated())
+      /*Whether the GPS is valid or not*/
+      if (gps1.location.isValid() && gps1.satellites.value() >= 4 && (gps1.hdop.hdop() < 3.0 && gps1.hdop.hdop() > 0.0))
       {
-        mPosition.m_iSatellites = gps1.satellites.value();
-        // Serial.print("Satellites in view: ");
-        // Serial.println(mPosition.m_iSatellites);
+          m_bIsValid = true;
       }
+      else
+      {
+          m_bIsValid = false;
+      }
+      /*HDop and Satellites*/
+      if (gps1.hdop.isValid()) {
+          mPosition.hDop = gps1.hdop.hdop();
+      }
+      
+
+      mPosition.m_iSatellites = gps1.satellites.value();
+    
       GpsHour = gps1.time.hour();
       GpsMins = gps1.time.minute();
       GpsDay = gps1.date.day();
-      uint8_t sec = gps1.time.second();
+      uint8_t GpsSec = gps1.time.second();
 
       uint8_t month = gps1.date.month();
       uint32_t year = gps1.date.year();
 
-      Epoch = ConvertToEpoch(year, month, GpsDay, GpsHour, GpsMins, sec);
+      Epoch = ConvertToEpoch(year, month, GpsDay, GpsHour, GpsMins, GpsSec);
 
-      debugPrint(hour);
+      debugPrint(GpsHour);
       debugPrint(" : ");
-      debugPrint(min);
+      debugPrint(GpsMins);
       debugPrint(" : ");
-      debugPrint(sec);
+      debugPrint(GpsSec);
       debugPrint("@ ");
-      debugPrint(date);
+      debugPrint(GpsDay);
       debugPrint("/");
       debugPrint(month);
       debugPrint("/");
@@ -93,10 +111,6 @@ void CGps::gpstask(void)
   }
 }
 
-cPosition CGps::getPondLocation()
-{
-  return mPosition;
-}
 
 // time_t CGps:: getEpoch()
 // {

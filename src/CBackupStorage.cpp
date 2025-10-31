@@ -50,7 +50,16 @@ int CBackupStorage::InitilizeBS(FILESYSTEM *fileSystem)
 {
     int pVal = 0;
     int cVal = 0;
-    long Wtime[MAXFILES] = {0};
+    
+    // Allocate Wtime array on heap to avoid stack overflow (MAXFILES=50 * sizeof(long) = 200 bytes)
+    long *Wtime = new long[MAXFILES];
+    if (!Wtime)
+    {
+        debugPrintln("Failed to allocate memory for Wtime array");
+        return FS_NOT_MOUNTED;
+    }
+    memset(Wtime, 0, MAXFILES * sizeof(long));
+    
     long maxT, minT;
 
     if (fileSystem->isMounted())
@@ -133,9 +142,11 @@ int CBackupStorage::InitilizeBS(FILESYSTEM *fileSystem)
         debugPrintln(m_irPos);
         debugPrint("wPos : ");
         debugPrintln(m_iwPos);
+        delete[] Wtime;
         return 1;
     }
     debugPrintln("File System Not Mounted");
+    delete[] Wtime;
     return FS_NOT_MOUNTED;
 }
 

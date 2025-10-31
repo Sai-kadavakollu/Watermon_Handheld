@@ -9,12 +9,13 @@ public:
     double m_lng;
     double hDop;
     int m_iSatellites;
+
     cPosition()
     {
         m_lat = 0.0;
         m_lng = 0.0;
-        hDop = -1;
-        m_iSatellites = 0;
+        hDop = 0.0;
+        m_iSatellites = 0;  
     }
     // ~cPosition();
 };
@@ -22,6 +23,9 @@ public:
 class CGps
 {
 private:
+    Stream* _gpsSerial; 
+    time_t ConvertToEpoch(uint16_t year, uint8_t mon, uint8_t date, uint8_t hour, uint8_t min, uint8_t sec);
+
 public:
     /* Construct */
     CGps();
@@ -33,9 +37,10 @@ public:
     int GpsMins;
     int GpsHour;
     int GpsDay;
+    bool m_bIsValid = false;
 
     cPosition mPosition;
-    cPosition getPondLocation(void);
+    void gpsInit(Stream *serialHandle);
     time_t getEpoch(void);
     void gpstask(void);
 };

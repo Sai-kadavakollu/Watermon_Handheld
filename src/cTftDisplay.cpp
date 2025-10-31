@@ -1,4 +1,5 @@
 #include "cTftDisplay.h"
+#include <cApplication.h>
 
 // #define DARK
 
@@ -575,7 +576,8 @@ void CDisplay::drawHeader()
   tft.setFreeFont(&calibri_regular10pt7b);
   tft.drawString(DisplayHeaderData.time, 5, 5);
 
-  drawSatelliteIcon(95, 5);
+  tft.setFreeFont(&calibri_regular7pt7b);
+  tft.drawString(DisplayHeaderData.FWVerison, 70, 7); 
   drawWiFiSymbol(125, 3, DisplayHeaderData.rssi, fgColor());
 
   tft.setTextColor(fgColor());
@@ -583,6 +585,7 @@ void CDisplay::drawHeader()
   tft.drawString(String(DisplayHeaderData.rssi), (DisplayHeaderData.rssi == 0) ? 155 : 147, 7);
 
   drawLocationSymbol(100, 8);
+
   drawBatteryIcon(175, 9, DisplayHeaderData.batteryPercentage);
 
   tft.setFreeFont(&calibri_regular7pt7b);
@@ -825,13 +828,14 @@ void CDisplay::FooterDebugMessages()
 // -------- Header icons --------
 void CDisplay::drawLocationSymbol(int x, int y)
 {
-  uint16_t useColor = DisplayHeaderData.LocationStatus ? fgColor() : TFT_LIGHTGREY;
+  uint16_t useColor = DisplayHeaderData.LocationStatus ? TFT_DARKGREEN : TFT_RED;
   tft.fillCircle(x, y, 5, useColor);
   tft.fillCircle(x, y, 2, bgColor());
   tft.fillTriangle(x - 4, y + 3, x + 4, y + 3, x, y + 11, useColor);
   tft.setCursor(140, HEADER_H + 1);
   tft.setFreeFont(&calibri_regular10pt7b);
   tft.setTextColor(useColor);
+  tft.drawString(String(DisplayHeaderData.Satellites), x + 7, y - 3);
 }
 
 void CDisplay::drawWiFiSymbol(int x, int y, int rssi, uint16_t color)
@@ -1132,12 +1136,6 @@ void CDisplay::drawCircularTimer(int cx, int cy, int r, int countdown, int maxCo
   tft.print(countdown);
 }
 
-void CDisplay::drawSatelliteIcon(int x, int y)
-{
-  uint16_t color = (DisplayHeaderData.Satellites > 0) ? fgColor() : TFT_LIGHTGREY;
-  tft.setTextColor(color);
-  tft.drawString(String(DisplayHeaderData.Satellites), x + 15, y);
-}
 
 void CDisplay::drawRightPanel(CPondConfig *PondConfig)
 {
@@ -1309,23 +1307,134 @@ void CDisplay::LoadingPage(void)
 
 void CDisplay::printFOTA(int progress)
 {
-  tft.setTextColor(fgColor());
-  tft.setFreeFont(&POPPINS_SEMIBOLD_012pt7b);
-  tft.setCursor(10, 40);
-  tft.print("Keep Device ON");
-  tft.setCursor(20, 80);
-  tft.print("Device");
-  tft.setCursor(20, 130);
-  tft.print("Firmware");
-  tft.setCursor(20, 180);
-  tft.print("Updating");
-  tft.setCursor(20, 250);
-  tft.setFreeFont(&POPPINS_SEMIBOLD_012pt7b);
-  tft.print("Progress:");
-  tft.fillRect(135, 230, 55, 40, bgColor());
-  tft.setCursor(135, 250);
+  static int lastProgress = -1;
+  static unsigned long lastUpdate = 0;
+  static int animFrame = 0;
+  static unsigned long startTime = 0;
+  
+  // Only redraw if progress changed or animation frame update needed
+  unsigned long now = millis();
+  bool needsUpdate = (progress != lastProgress) || (now - lastUpdate > 100);
+  
+  if (!needsUpdate) return;
+  
+  lastUpdate = now;
+  animFrame = (animFrame + 1) % 8; // 8-frame animation cycle
+  
+  // First time setup - draw static elements
+  if (lastProgress == -1) {
+    startTime = now;
+    
+    // Fill screen with black background
+    tft.fillScreen(TFT_BLACK);
+    
+    // Draw decorative header bar
+    tft.fillRect(0, 0, 240, 50, TFT_SKYBLUE);
+    tft.drawLine(0, 50, 240, 50, TFT_CYAN);
+    tft.drawLine(0, 51, 240, 51, TFT_CYAN);
+    
+    // Title with icon effect
+    tft.setTextColor(TFT_BLACK);
+    tft.setFreeFont(&calibri_regular12pt7b);
+    tft.setCursor(15, 35);
+    tft.print("FIRMWARE UPDATE");
+    
+    // Device info section
+    tft.setTextColor(TFT_LIGHTGREY);
+    tft.setFreeFont(&calibri_regular10pt7b);
+    tft.setCursor(10, 75);
+    tft.print("Device:");
+    tft.setTextColor(TFT_ORANGE);
+    tft.print(" Watermon");
+    
+    tft.setTextColor(TFT_LIGHTGREY);
+    tft.setCursor(10, 95);
+    tft.print("Version:");
+    tft.setTextColor(TFT_ORANGE);
+    tft.print(" " + String(FW_VERSION) + "." + String(BOARD_VERSION));
+    
+    // Warning box
+    tft.drawRoundRect(10, 105, 220, 40, 5, TFT_RED);
+    tft.setTextColor(TFT_YELLOW);
+    tft.setFreeFont(&calibri_regular10pt7b);
+    tft.setCursor(25, 122);
+    tft.print("DO NOT POWER OFF!");
+    tft.setFreeFont(&calibri_regular10pt7b);
+    tft.setCursor(20, 140);
+    tft.setTextColor(TFT_ORANGE);
+    tft.print("Keep device connected");
+    
+    // Progress section label
+    tft.setTextColor(TFT_WHITE);
+    tft.setFreeFont(&POPPINS_SEMIBOLD_09pt7b);
+    tft.setCursor(20, 170);
+    tft.print("Download Progress:");
+    
+    // Draw progress bar border (rounded rectangle)
+    tft.drawRoundRect(20, 185, 200, 30, 5, TFT_DARKGREY);
+    tft.drawRoundRect(21, 186, 198, 28, 5, TFT_DARKGREY);
+  }
+  
+  // Clear progress bar interior only if progress changed
+  if (progress != lastProgress) {
+    tft.fillRoundRect(23, 188, 194, 24, 4, TFT_BLACK);
+  }
+  
+  // Calculate progress bar width
+  int barWidth = (progress * 194) / 100;
+  
+  // Draw gradient progress bar with animation
+  if (barWidth > 0) {
+    // Create animated gradient effect
+    uint16_t color1 = TFT_GREEN;
+    uint16_t color2 = TFT_CYAN;
+    
+    if (progress < 30) {
+      color1 = TFT_RED;
+      color2 = TFT_ORANGE;
+    } else if (progress < 70) {
+      color1 = TFT_ORANGE;
+      color2 = TFT_YELLOW;
+    }
+    
+    // Draw progress bar with gradient
+    for (int i = 0; i < barWidth; i++) {
+      uint16_t color = (i % 2 == animFrame % 2) ? color1 : color2;
+      tft.drawFastVLine(23 + i, 188, 24, color);
+    }
+    
+    // Add shine effect (animated moving highlight)
+    int shinePos = (animFrame * barWidth) / 8;
+    if (shinePos < barWidth - 3) {
+      tft.drawFastVLine(23 + shinePos, 190, 4, TFT_WHITE);
+      tft.drawFastVLine(24 + shinePos, 190, 4, TFT_WHITE);
+    }
+  }
+  
+  // Draw percentage text (large and centered) - only clear if changed
+  if (progress != lastProgress) {
+    tft.fillRect(80, 220, 150, 35, TFT_BLACK); // Clear only percentage area
+  }
+  tft.setTextColor(TFT_WHITE);
+  tft.setFreeFont(&POPPINS_SEMIBOLD_020pt7b);
+  tft.setCursor(progress < 10 ? 105 : (progress < 100 ? 90 : 75), 250);
   tft.print(progress);
   tft.print("%");
+  
+  // Status message based on progress - clear only status text area
+  tft.fillRect(30, 260, 180, 25, TFT_BLACK); // Clear only status area
+  tft.setTextColor(TFT_CYAN);
+  tft.setFreeFont(&POPPINS_SEMIBOLD_012pt7b);
+  
+  if (progress < 100) {
+    tft.setCursor(40, 285);
+    tft.print("Downloading");
+    tft.setTextColor(TFT_YELLOW);
+    for (int i = 0; i < (animFrame % 4); i++) {
+      tft.print(".");
+    }
+  }
+  lastProgress = progress;
 }
 
 void CDisplay::drawCompanyLogo()

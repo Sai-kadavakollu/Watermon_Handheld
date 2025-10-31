@@ -4,7 +4,7 @@
 #define TOSTR(x) #x
 #define STRINGIFY(x) TOSTR(x)
 
-#define FW_VERSION 31
+#define FW_VERSION 2
 #define BOARD_VERSION 5
 #define DEVICE_TYPE "DO"
 
@@ -12,7 +12,6 @@
 #include "CAT24C32.h"
 #include "BSP.h"
 #include "CBackupStorage.h"
-#include "CHttp.h"
 #include "CDeviceConfig.h"
 #include "GPS.h"
 #include "cTftDisplay.h"
@@ -20,7 +19,6 @@
 #include "Geofence.h"
 #include "CPondConfig.h"
 #include "CDoSensor.h"
-#include "cPN532.h"
 
 #define MAX_NEAREST_PONDS 3
 #define NEAREST_POND_MAX_VALUE 1500
@@ -56,16 +54,85 @@ struct ButtonState_t
     bool buttonChanged = false;
 };
 
+// Grouped application timers and counters
+struct AppTimers
+{
+    int timeOutFrameCounter = 0;
+    int netCheckCounter = 0;
+    int countDownTimer = 0;
+    int rebootAfterOfflineCnt = 0;
+    time_t lastPondNameCheckEpoch = 0;
+    time_t pingEpoch = 0;
+};
+
+// Application configuration settings
+struct AppConfig
+{
+    int totalMinsOffSet = 180;
+    int operationMode = EVENT_BASED_MODE;
+    int dataFrequencyInterval = 5;
+    uint8_t morningPondMapResetTime = 2;
+    uint8_t eveningPondMapResetTime = 14;
+    int lastMorningDay = -1;
+    int lastEveningDay = -1;
+};
+
+// Application state flags
+struct AppState
+{
+    bool isGPS = false;
+    bool isCharging = false;
+    bool isOnline = false;
+    bool getConfig = true;
+    bool sendFrame = false;
+    bool rtcSyncNow = false;
+    bool resetEntireMap = false;
+    bool pingNow = false;
+    bool doFota = false;
+    bool foundPondName = false;
+    bool morningCheckedThisBoot = false;
+    bool eveningCheckedThisBoot = false;
+};
+
+// Sensor readings
+struct SensorData
+{
+    float doMglValue = 0.0;
+    float doSaturationVal = 0.0;
+    float tempVal = 0.0;
+};
+
+// Current pond information
+struct CurrentPondInfo
+{
+    char CurrentPondName[20] = {0};
+    char CurrentLocationId[100] = {0};
+    char CurrentPondID[100] = {0};
+    float CurrentPondSalinity = 0.0;
+};
+
+// Smart configuration data
+struct SmartConfigData
+{
+    String myName;
+    String newSsid;
+    String newPassword;
+    String myPassKey = "12345678";
+    bool isReceivedConfig = false;
+    bool GoToSmartConfig = false;
+    unsigned long rebootTime = 0;
+    unsigned long timeoutMillis = 0;
+};
+
 class cApplication
 {
 private:
     uint8_t m_u8SendBackUpFrameConter;
     int m_iRtcSyncCounter;
-    int m_iButtonLongPressCounter;
     int m_iFrameInProcess;
     char m_cUriPath[150] = "";
     bool m_bButtonPressed;
-    bool GoToSmartConfig = false;
+    uint8_t buzz = 0;
 
     uint8_t currentScreen = 1;
     /*Functions*/
