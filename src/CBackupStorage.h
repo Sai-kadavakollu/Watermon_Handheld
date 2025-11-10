@@ -21,6 +21,16 @@
 #include "FileSystem.h"
 #include "SPIFFS.h"
 
+// Structure to hold parsed backup entry data
+typedef struct __attribute__((packed))
+{
+  char time[10];        // Time string e.g., "10:02"
+  char pName[20];       // Pond name
+  float doValue;        // DO in mg/L
+  float tempValue;      // Temperature
+  int fileIndex;        // Which BAK file this came from
+} BackupEntry_t;
+
 class CBackupStorage
 {
 private:
@@ -39,6 +49,7 @@ public:
   int clearAllFiles(FILESYSTEM *fileSystem);
   int countStoredFiles(FILESYSTEM *fileSystem);
   int clearNonBackupFiles(FILESYSTEM *fileSystem);
+  int loadAllBackupEntries(FILESYSTEM *fileSystem, BackupEntry_t *entries, int maxEntries);
 };
 
 #endif

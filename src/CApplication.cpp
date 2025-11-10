@@ -429,13 +429,15 @@ void IRAM_ATTR handleButtonInterrupt()
 void cApplication::CheckForButtonEvent()
 {
     static bool isButtonPressed = false;
+    static bool backupViewerJustEntered = false;
+    static unsigned long countdownStartTime = 0; // Store countdown start time
 
     unsigned long now = millis();
 
-    // Countdown handler
+    // Countdown handler - update timer continuously
     if (isButtonPressed)
     {
-        g_timers.countDownTimer = (now - ButtonState.buttonPressedMillis) / 1000;
+        g_timers.countDownTimer = (now - countdownStartTime) / 1000;
         m_oDisp.DisplayGeneralVariables.Counter = g_timers.countDownTimer;
     }
     // debugPrintf(" CountDown: %d \n", g_timers.countDownTimer);
@@ -444,26 +446,75 @@ void cApplication::CheckForButtonEvent()
     {
         g_timers.countDownTimer = 0;
         isButtonPressed = false;
+        m_oDisp.DisplayGeneralVariables.Counter = 0; // Reset counter display
         buzz = 10;
         sendFrameType = VDIFF_FRAME;
         m_oDisp.PopUpDisplayData.UploadStatus = NO_FRAME_IN_PROCESS;
         debugPrintln("Generated Frame");
     }
 
-    // --- Detect SHORT_PRESS while holding (no release required) ---
-    if (!ButtonState.buttonReleased)
-    { // button still pressed
+    // --- Detect button press events while holding (no release required) ---
+    // Ignore button presses during countdown
+    if (!ButtonState.buttonReleased && !isButtonPressed)
+    { // button still pressed and countdown not active
         unsigned long heldTime = now - ButtonState.buttonPressedMillis;
-        if (heldTime > 2000 && lastButtonEvent != SHORT_PRESS_DETECTED)
+        
+        // 10-second press for backup viewer (only from main screen)
+        if (heldTime > 10000 && currentScreen == 1 && lastButtonEvent != VERY_LONG_PRESS_DETECTED)
+        {
+            lastButtonEvent = VERY_LONG_PRESS_DETECTED;
+            debugPrintln("VERY_LONG_PRESS_DETECTED - Entering Backup Viewer");
+            m_oDisp.DisplayGeneralVariables.lastButtonEvent = lastButtonEvent;
+            
+            // Switch to backup viewer screen
+            currentScreen = 3;
+            backupViewerJustEntered = true; // Mark that we just entered
+            
+            // Load backup data only once
+            if (!m_oDisp.backupDataLoaded)
+            {
+                m_oDisp.totalBackupEntries = m_oBackupStore.loadAllBackupEntries(
+                    &m_oFileSystem, 
+                    m_oDisp.backupEntries, 
+                    50
+                );
+                m_oDisp.backupDataLoaded = true;
+                m_oDisp.backupScrollIndex = 0;
+                debugPrintf("Loaded %d backup entries\n", m_oDisp.totalBackupEntries);
+            }
+            
+            buzz = 10; // Feedback beep
+            m_oDisp.ClearDisplay();
+        }
+        // 2-second press for config mode or exit backup viewer
+        else if (heldTime > 2000 && lastButtonEvent != SHORT_PRESS_DETECTED && !backupViewerJustEntered)
         {
             lastButtonEvent = SHORT_PRESS_DETECTED;
             debugPrintln("SHORT_PRESS_DETECTED (while holding)");
             m_oDisp.DisplayGeneralVariables.lastButtonEvent = lastButtonEvent;
+            
+            // Exit backup viewer if currently in it
+            if (currentScreen == 3)
+            {
+                currentScreen = 1;
+                m_oDisp.resetBackupViewerScreen(); // Reset screen state
+                m_oDisp.forceMainScreenRefresh(); // Force complete refresh of main screen
+                m_oDisp.ClearDisplay();
+                debugPrintln("Exiting Backup Viewer");
+                buzz = 5;
+            }
         }
+    }
+    
+    // Reset the flag when button is released
+    if (ButtonState.buttonReleased)
+    {
+        backupViewerJustEntered = false;
     }
 
     // --- Detect JUST_PRESSED on release ---
-    if (ButtonState.buttonChanged && ButtonState.buttonReleased)
+    // Only process button release if countdown is not active
+    if (ButtonState.buttonChanged && ButtonState.buttonReleased && !isButtonPressed)
     {
         ButtonState.buttonChanged = false;
 
@@ -473,6 +524,16 @@ void cApplication::CheckForButtonEvent()
         {
             lastButtonEvent = JUST_PRESSED;
             debugPrintln("JUST_PRESSED (on release)");
+            
+            // Start countdown only for JUST_PRESSED on main screen
+            if (currentScreen == 1)
+            {
+                isButtonPressed = true;
+                countdownStartTime = now; // Store countdown start time
+                buzz = 5;
+                debugPrintln(" Button Pressed CountDown Start");
+                m_oDisp.PopUpDisplayData.UploadStatus = FRAME_CAPTURE_COUNTDOWN;
+            }
         }
         else
         {
@@ -480,16 +541,14 @@ void cApplication::CheckForButtonEvent()
         }
 
         m_oDisp.DisplayGeneralVariables.lastButtonEvent = lastButtonEvent;
-
-        // Start countdown only for JUST_PRESSED
-        if (currentScreen == 1 && lastButtonEvent == JUST_PRESSED && !isButtonPressed)
-        {
-            isButtonPressed = true;
-            buzz = 5;
-            debugPrintln(" Button Pressed CountDown Start");
-            m_oDisp.PopUpDisplayData.UploadStatus = FRAME_CAPTURE_COUNTDOWN;
-            ButtonState.buttonPressedMillis = now;
-        }
+    }
+    else if (ButtonState.buttonChanged && ButtonState.buttonReleased && isButtonPressed)
+    {
+        // Button released during countdown - ignore it completely
+        ButtonState.buttonChanged = false;
+        lastButtonEvent = BUTTON_NONE; // Don't set JUST_PRESSED
+        m_oDisp.DisplayGeneralVariables.lastButtonEvent = BUTTON_NONE;
+        debugPrintln("Button press ignored - countdown active");
     }
 }
 
@@ -1922,7 +1981,7 @@ int cApplication::appInit(void)
     m_oMemory.begin("deviceMemory", false);
     
     /*HTTP device initialization with ops structure - MUST be before readDeviceConfig*/
-    if (http_device_init(&g_http_dev, "ESP32_HTTP", &esp32_http_ops) != 0) {
+    if (http_device_init(&g_http_dev, "WATERMON_HTTP", &esp32_http_ops) != 0) {
         debugPrintln("HTTP device init failed!");
     } else {
         debugPrintln("HTTP device initialized with default server");

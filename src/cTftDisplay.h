@@ -7,6 +7,7 @@
 #include <math.h>
 #include "CPondConfig.h"
 #include "company_logo_220x220.h"
+#include "CBackupStorage.h"
 
 /*POPPINS FAMILY*/
 #include "POPPINS_SEMIBOLD_09pt7b.h"
@@ -48,7 +49,7 @@
 #define SCREEN_HEIGHT 320 // was 320 (portrait)
 #define OREINTATION 0
 
-#define TIMER_COUNTDOWN 60
+#define TIMER_COUNTDOWN 10
 
 #define DARK_BG TFT_BLACK
 #define DARK_FG TFT_WHITE
@@ -94,7 +95,8 @@ enum ButtonEvent
   BUTTON_NONE,
   JUST_PRESSED,
   SHORT_PRESS_DETECTED,
-  LONG_PRESS_DETECTED
+  LONG_PRESS_DETECTED,
+  VERY_LONG_PRESS_DETECTED  // 10 seconds for backup view
 };
 
 typedef struct __attribute__((packed))
@@ -131,13 +133,15 @@ class CDisplay
 public:
   void begin(void);
   void ClearDisplay(void);
-  // screentype: 1=Main, 2=Config (same as your code)
+  // screentype: 1=Main, 2=Config, 3=Backup Viewer
   void renderDisplay(uint8_t ScreenType, CPondConfig *PondConfig);
   void defaultDisplay(void);
   void DisplaySmartConfig(String Myname, String MyPassKey);
   void DisplaySaveSmartConfig(String NewSsid, String NewPassword);
   void printFOTA(int progress);
   void printSavingCoordinates(void);
+  void resetBackupViewerScreen(void);
+  void forceMainScreenRefresh(void);
 
   bool m_bSmartConfigMode = false;
   bool m_bResetServerFlag = false;
@@ -152,6 +156,15 @@ public:
   Footer_t DisplayFooterData;
   GeneralVaraibles_t DisplayGeneralVariables;
   PopUp_t PopUpDisplayData;
+
+  // Backup viewer data
+  BackupEntry_t backupEntries[50];  // Max 50 backup files
+  int totalBackupEntries = 0;
+  int backupScrollIndex = 0;
+  bool backupDataLoaded = false;
+  bool backupScreenNeedsInit = true;
+  int lastScrollIndex = -1;  // Track last scroll position
+  bool screenDrawn = false;  // Track if backup screen has been drawn
 
 private:
   std::map<std::string, PondInfo> lastPondStatusMap;
@@ -171,6 +184,9 @@ private:
   /*LoadingPage -> WaterMon, Do sensor in water*/
   void LoadingPage();
   void MainDisplayHandler(CPondConfig *PondConfig);
+  
+  /*Backup Viewer Screen*/
+  void BackupViewerScreenHandler();
 
   /*Icons in header*/
   void drawHeader();

@@ -47,7 +47,7 @@ class cBsp;  /**< BSP device for watchdog operations */
 
 /**
  * @struct http_ops
- * @brief HTTP Operations Structure (Linux kernel driver style)
+ * @brief HTTP Operations Structure
  * 
  * @details
  * Contains function pointers for all HTTP operations. This is the core

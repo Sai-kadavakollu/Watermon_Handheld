@@ -57,6 +57,33 @@ void CDisplay::ClearDisplay(void)
   tft.fillScreen(bgColor());
 }
 
+void CDisplay::resetBackupViewerScreen(void)
+{
+  backupDataLoaded = false;
+  backupScrollIndex = 0;
+  totalBackupEntries = 0;
+  backupScreenNeedsInit = true;
+  lastScrollIndex = -1;
+  screenDrawn = false;
+  lastPondStatusMap.clear();
+}
+
+void CDisplay::forceMainScreenRefresh(void)
+{
+  // Reset text datum to default
+  tft.setTextDatum(TL_DATUM);
+  
+  // Force refresh by invalidating previous data
+  memset(&PrevDisplayLeftPanelData, 0xFF, sizeof(PrevDisplayLeftPanelData));
+  memset(&PrevDisplayHeaderData, 0xFF, sizeof(PrevDisplayHeaderData));
+  memset(&PrevDisplayFooterData, 0xFF, sizeof(PrevDisplayFooterData));
+  
+  // Reset flags
+  FirstTimeInRightPanel = false;
+  CounterToResetThePopuPScreens = 0;
+  
+}
+
 // -------- Top-level render --------
 void CDisplay::renderDisplay(uint8_t ScreenType, CPondConfig *PondConfig)
 {
@@ -70,6 +97,9 @@ void CDisplay::renderDisplay(uint8_t ScreenType, CPondConfig *PondConfig)
     break;
   case 2:
     ConfigModeScreenHandler();
+    break;
+  case 3:
+    BackupViewerScreenHandler();
     break;
   default:
     break;
@@ -1305,9 +1335,9 @@ void CDisplay::LoadingPage(void)
   drawCompanyLogo();
 }
 
+int lastProgress = -1;
 void CDisplay::printFOTA(int progress)
 {
-  static int lastProgress = -1;
   static unsigned long lastUpdate = 0;
   static int animFrame = 0;
   static unsigned long startTime = 0;
@@ -1554,5 +1584,169 @@ void CDisplay::DisplaySaveSmartConfig(String NewSsid, String NewPassword)
     tft.setCursor(5, 230);
     tft.print("Restarting in " + String(SmartConfigcountdown) + "s");
     SmartConfigcountdown--;
+  }
+}
+
+// ========== BACKUP VIEWER SCREEN ==========
+void CDisplay::BackupViewerScreenHandler()
+{
+  bool needsRedraw = false;
+  
+  const int maxRowsOnScreen = 7; // Show up to 7 entries
+
+  // Handle button events for scrolling (only if more than 7 entries)
+  if (DisplayGeneralVariables.lastButtonEvent == JUST_PRESSED && totalBackupEntries > maxRowsOnScreen)
+  {
+    // Scroll down to next entry
+    if (backupScrollIndex < totalBackupEntries - 1)
+    {
+      backupScrollIndex++;
+    }
+    else
+    {
+      backupScrollIndex = 0; // Wrap around to first entry
+    }
+    DisplayGeneralVariables.lastButtonEvent = BUTTON_NONE;
+    needsRedraw = true;
+  }
+  else if (DisplayGeneralVariables.lastButtonEvent == JUST_PRESSED)
+  {
+    // Clear the event even if not scrolling
+    DisplayGeneralVariables.lastButtonEvent = BUTTON_NONE;
+  }
+
+  // Check if we need to initialize or redraw
+  if (backupScreenNeedsInit)
+  {
+    Serial.println("[BackupViewer] Redraw triggered: backupScreenNeedsInit = true");
+    needsRedraw = true;
+    screenDrawn = false;
+    lastScrollIndex = -1;
+  }
+  else if (backupScrollIndex != lastScrollIndex)
+  {
+    Serial.printf("[BackupViewer] Redraw triggered: scrollIndex changed from %d to %d\n", lastScrollIndex, backupScrollIndex);
+    needsRedraw = true;
+    lastScrollIndex = backupScrollIndex;
+  }
+
+  // Only redraw if needed
+  if (!needsRedraw && screenDrawn)
+  {
+    return; // Exit early - no redraw needed
+  }
+  
+  Serial.println("[BackupViewer] Drawing screen...");
+
+  // Clear screen and set background (only when needed)
+  tft.fillScreen(TFT_BLACK);
+  backupScreenNeedsInit = false;
+  screenDrawn = true;
+
+  // Draw colorful gradient header
+  tft.setFreeFont(&POPPINS_SEMIBOLD_09pt7b);
+  tft.setTextColor(TFT_WHITE);
+  tft.setTextDatum(TC_DATUM);
+  
+  // Gradient header background (blue to cyan)
+  for (int i = 0; i < 40; i++)
+  {
+    uint16_t color = tft.color565(0, 100 + i * 2, 150 + i);
+    tft.drawFastHLine(0, i, SCREEN_WIDTH, color);
+  }
+  
+  tft.drawString("Backup Frames Data", SCREEN_WIDTH / 2, 8);
+
+  // Draw column headers with colored background
+  tft.fillRect(0, 45, SCREEN_WIDTH, 20, tft.color565(40, 40, 80));
+  tft.setFreeFont(&calibri_regular8pt7b);
+  tft.setTextColor(TFT_YELLOW);
+  tft.setTextDatum(TL_DATUM);
+  
+  int headerY = 48;
+  tft.drawString("No", 5, headerY);
+  tft.drawString("Time", 40, headerY);
+  tft.drawString("Pond", 90, headerY);
+  tft.drawString("DO", 150, headerY);
+  tft.drawString("Temp", 195, headerY);
+
+  // Display entries starting from scroll index
+  int rowHeight = 28;
+  int startY = 90;
+  tft.setFreeFont(&calibri_regular8pt7b);
+  
+  for (int i = 0; i < maxRowsOnScreen && (backupScrollIndex + i) < totalBackupEntries; i++)
+  {
+    int entryIndex = backupScrollIndex + i;
+    int yPos = startY + (i * rowHeight);
+    
+    // Alternate row colors for better readability
+    if (i % 2 == 0)
+    {
+      tft.fillRect(0, yPos - 15, SCREEN_WIDTH, rowHeight - 2, tft.color565(20, 20, 40));
+    }
+
+    // Serial number (white)
+    tft.setTextColor(TFT_WHITE);
+    tft.setCursor(5, yPos);
+    tft.print(entryIndex + 1);
+
+    // Time (cyan)
+    tft.setTextColor(TFT_CYAN);
+    tft.setCursor(40, yPos);
+    tft.print(backupEntries[entryIndex].time);
+
+    // Pond Name (green, truncate if too long, show -- if empty)
+    tft.setTextColor(TFT_GREEN);
+    tft.setCursor(90, yPos);
+    String pName = String(backupEntries[entryIndex].pName);
+    
+    // Check if pond name is empty or null
+    if (pName.length() == 0 || pName[0] == '\0' || pName == "Unknown")
+    {
+      pName = "--";
+    }
+    else if (pName.length() > 7)
+    {
+      pName = pName.substring(0, 6) + ".";
+    }
+    tft.print(pName);
+
+    // DO Value (orange)
+    tft.setTextColor(TFT_ORANGE);
+    tft.setCursor(150, yPos);
+    tft.print(backupEntries[entryIndex].doValue, 2);
+
+    // Temperature (magenta)
+    tft.setTextColor(TFT_MAGENTA);
+    tft.setCursor(195, yPos);
+    tft.print(backupEntries[entryIndex].tempValue, 1);
+  }
+
+  // Draw simple footer - 2 rows only
+  int footerY = SCREEN_HEIGHT - 35;
+  
+  // Solid footer background
+  tft.fillRect(0, footerY, SCREEN_WIDTH, 35, tft.color565(0, 40, 80));
+  
+  tft.setFreeFont(&calibri_regular8pt7b);
+  tft.setTextDatum(TC_DATUM);
+  
+  // Row 1: Total entries count
+  tft.setTextColor(TFT_YELLOW);
+  String countText = "Total : " + String(totalBackupEntries) + " -> Showing " + String(backupScrollIndex + 1) + " of " + 
+                     String(min(backupScrollIndex + maxRowsOnScreen, totalBackupEntries));
+  tft.drawString(countText, SCREEN_WIDTH / 2, footerY + 5);
+  
+  // Row 2: Instructions or scroll info
+  tft.setTextColor(TFT_WHITE);
+  if (totalBackupEntries > maxRowsOnScreen)
+  {
+    String navText = " Press to scroll | Long press to exit";
+    tft.drawString(navText, SCREEN_WIDTH / 2, footerY + 20);
+  }
+  else
+  {
+    tft.drawString("Long press to exit", SCREEN_WIDTH / 2, footerY + 20);
   }
 }

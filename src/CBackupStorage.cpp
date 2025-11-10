@@ -11,6 +11,7 @@
   */
 
 #include "CBackupStorage.h"
+#include <ArduinoJson.h>
 
 // #define SERIAL_DEBUG
 #ifdef SERIAL_DEBUG
@@ -318,4 +319,95 @@ int CBackupStorage::countStoredFiles(FILESYSTEM *fileSystem)
         }
     }
     return count;
+}
+
+/********************************************************************
+ * Load and parse all backup entries from files
+ * @param[in] fileSystem - pointer to filesystem
+ * @param[out] entries - array to store parsed entries
+ * @param[in] maxEntries - maximum number of entries to load
+ * @return number of entries loaded
+ *******************************************************************/
+int CBackupStorage::loadAllBackupEntries(FILESYSTEM *fileSystem, BackupEntry_t *entries, int maxEntries)
+{
+    int entryCount = 0;
+    
+    if (!fileSystem->isMounted())
+    {
+        debugPrintln("Filesystem not mounted");
+        return 0;
+    }
+
+    for (int i = 0; i < MAXFILES && entryCount < maxEntries; i++)
+    {
+        char fname[20] = {0};
+        sprintf(fname, "/BAK_%d.txt", i);
+        
+        File file = SPIFFS.open(fname);
+        if (!file || file.isDirectory())
+        {
+            continue;
+        }
+
+        size_t fileSize = file.size();
+        if (fileSize <= 10) // Empty or placeholder file
+        {
+            file.close();
+            continue;
+        }
+
+        // Read file content
+        char *jsonBuffer = new char[fileSize + 1];
+        if (!jsonBuffer)
+        {
+            debugPrintln("Failed to allocate memory for JSON buffer");
+            file.close();
+            continue;
+        }
+
+        size_t bytesRead = file.readBytes(jsonBuffer, fileSize);
+        jsonBuffer[bytesRead] = '\0';
+        file.close();
+
+        // Parse JSON
+        DynamicJsonDocument doc(1400);
+        DeserializationError error = deserializeJson(doc, jsonBuffer);
+        
+        if (error)
+        {
+            debugPrint("JSON parse error in ");
+            debugPrint(fname);
+            debugPrint(": ");
+            debugPrintln(error.c_str());
+            delete[] jsonBuffer;
+            continue;
+        }
+
+        // Extract required fields
+        const char* timeStr = doc["timeBuffer"] | "N/A";
+        const char* pondName = doc["PondName"] | "Unknown";
+        float doVal = doc["do"] | 0.0f;
+        float temp = doc["temp"] | 0.0f;
+
+        // Store in entry array
+        strncpy(entries[entryCount].time, timeStr, sizeof(entries[entryCount].time) - 1);
+        entries[entryCount].time[sizeof(entries[entryCount].time) - 1] = '\0';
+        
+        strncpy(entries[entryCount].pName, pondName, sizeof(entries[entryCount].pName) - 1);
+        entries[entryCount].pName[sizeof(entries[entryCount].pName) - 1] = '\0';
+        
+        entries[entryCount].doValue = doVal;
+        entries[entryCount].tempValue = temp;
+        entries[entryCount].fileIndex = i;
+
+        debugPrintf("Loaded entry %d: %s, %s, DO:%.2f, Temp:%.2f\n", 
+                    entryCount, entries[entryCount].time, entries[entryCount].pName, 
+                    doVal, temp);
+
+        entryCount++;
+        delete[] jsonBuffer;
+    }
+
+    debugPrintf("Total backup entries loaded: %d\n", entryCount);
+    return entryCount;
 }
