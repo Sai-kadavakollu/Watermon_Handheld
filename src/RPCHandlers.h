@@ -11,9 +11,8 @@ extern class cBsp m_oBsp;
 extern class cPCF85063A m_oRtc;
 extern class FILESYSTEM m_oFileSystem;
 extern class CBackupStorage m_oBackupStore;
-extern class CDeviceConfig m_oConfig;
 extern struct http_device g_http_dev; // HTTP device with ops structure (C-style)
-extern class CSensor m_oSensor;
+extern struct do_sensor_device g_do_sensor; // DO sensor with ops structure (C-style)
 extern class CGps m_oGps;
 extern class CDisplay m_oDisp;
 extern class Preferences m_oMemory;
@@ -26,6 +25,7 @@ extern SemaphoreHandle_t xSharedVarMutex;
 extern AppState g_appState;
 extern AppTimers g_timers;
 extern AppConfig g_config;
+extern DeviceConfig g_deviceConfig;
 extern SensorData g_sensorData;
 extern CurrentPondInfo g_currentPond;
 extern SmartConfigData g_smartConfig;

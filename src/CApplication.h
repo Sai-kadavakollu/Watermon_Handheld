@@ -4,7 +4,7 @@
 #define TOSTR(x) #x
 #define STRINGIFY(x) TOSTR(x)
 
-#define FW_VERSION 2
+#define FW_VERSION 3
 #define BOARD_VERSION 5
 #define DEVICE_TYPE "DO"
 
@@ -12,13 +12,12 @@
 #include "CAT24C32.h"
 #include "BSP.h"
 #include "CBackupStorage.h"
-#include "CDeviceConfig.h"
 #include "GPS.h"
 #include "cTftDisplay.h"
 #include <Preferences.h>
-#include "Geofence.h"
-#include "CPondConfig.h"
-#include "CDoSensor.h"
+#include "geofence_ops.h"
+#include "CPondConfig.h"    
+#include "do_sensor_ops.h"
 
 #define MAX_NEAREST_PONDS 3
 #define NEAREST_POND_MAX_VALUE 1500
@@ -62,6 +61,14 @@ struct AppTimers
     int countDownTimer = 0;
     int rebootAfterOfflineCnt = 0;
     time_t lastPondNameCheckEpoch = 0;
+};
+
+struct DeviceConfig
+{
+    uint8_t m_u8IsReboot;
+    int espResetReason;
+    time_t m_tEpoch;
+    bool m_bIsSafeModeOn;
     time_t pingEpoch = 0;
 };
 

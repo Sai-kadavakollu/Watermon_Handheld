@@ -131,7 +131,7 @@ void CreateTasks(int Value)
   xTaskCreatePinnedToCore(
       Task3code,                /* Task function. */
       "Modbus",                 /* name of task. */
-      10000,                    /* Stack size of task */
+      4096,                    /* Stack size of task */
       NULL,                     /* parameter of the task */
       1,                        /* priority of the task */
       &commandParseTaskHandler, /* Task handle to keep track of created task */
@@ -142,7 +142,7 @@ void CreateTasks(int Value)
   xTaskCreatePinnedToCore(
       Task4code,       /* Task function. */
       "OTA",           /* name of task. */
-      15000,           /* Stack size of task */
+      10000,           /* Stack size of task */
       NULL,            /* parameter of the task */
       4,               /* priority of the task - HIGHEST for critical firmware updates */
       &OtaTaskHandler, /* Task handle to keep track of created task */
@@ -153,7 +153,7 @@ void CreateTasks(int Value)
   xTaskCreatePinnedToCore(
       Task5code,           /* Task function. */
       "SmartConfig",       /* name of task. */
-      5000,                /* Stack size of task */
+      4096,                /* Stack size of task */
       NULL,                /* parameter of the task */
       2,                   /* priority of the task - REDUCED from 5 to prevent starvation */
       &SmartConfigHandler, /* Task handle to keep track of created task */

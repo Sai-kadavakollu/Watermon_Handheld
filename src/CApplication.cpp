@@ -9,7 +9,7 @@
 #include "RPCHandlers.h"
 #include "http_ops.h"
 
-#define SERIAL_DEBUG
+// #define SERIAL_DEBUG  // Disabled to save flash memory - Enable only for debugging
 #ifdef SERIAL_DEBUG
 #define debugPrint(...) Serial.print(__VA_ARGS__)
 #define debugPrintln(...) Serial.println(__VA_ARGS__)
@@ -40,13 +40,12 @@ Ticker AppTimer;
 cPCF85063A m_oRtc; // define a object of PCF85063A class
 FILESYSTEM m_oFileSystem;
 CBackupStorage m_oBackupStore;
-CDeviceConfig m_oConfig;
 struct http_device g_http_dev; // HTTP device with ops structure (C-style)
-CSensor m_oSensor;
+struct do_sensor_device g_do_sensor; // DO sensor with ops structure (C-style)
+struct geofence_device g_geofence; // Geofence with ops structure (C-style)
 CGps m_oGps;
 CDisplay m_oDisp;
 Preferences m_oMemory;
-Geofence m_oGeofence;
 CPondConfig m_oPondConfig(&m_oFileSystem);
 volatile ButtonState_t ButtonState;
 
@@ -65,6 +64,8 @@ AppState g_appState;
 AppTimers g_timers;
 // Application configuration
 AppConfig g_config;
+// Device Configuration
+DeviceConfig g_deviceConfig;
 // Sensor data struct
 SensorData g_sensorData;
 // Current pond information struct
@@ -602,8 +603,8 @@ void cApplication::print_wakeup_reason()
 void cApplication::print_restart_reason()
 {
     /*Reading esp reset reason*/
-    m_oConfig.espResetReason = esp_reset_reason();
-    switch (m_oConfig.espResetReason)
+    g_deviceConfig.espResetReason = esp_reset_reason();
+    switch (g_deviceConfig.espResetReason)
     {
     case ESP_RST_UNKNOWN:
         Serial.println("Reset reason can not be determined");
@@ -678,7 +679,7 @@ void cApplication::uploadframeFromBackUp(void)
         {
             pingNow = false;
             debugPrintln("Trying ping in BAK");
-            g_timers.pingEpoch = SendPing();
+            g_deviceConfig.pingEpoch = SendPing();
             return;
         }
         if (m_oBackupStore.available())
@@ -724,14 +725,14 @@ void cApplication::uploadframeFromBackUp(void)
 void cApplication::updateJsonAndSendFrame(void)
 {
     debugPrint("## Generate And send frame");
-    debugPrintln(m_oConfig.m_tEpoch);
+    debugPrintln(g_deviceConfig.m_tEpoch);
     /*Check if RTC time is correct*/
-    if (m_oConfig.m_tEpoch < 1609439400)
+    if (g_deviceConfig.m_tEpoch < 1609439400)
     {
         // 1609439400 is Friday, January 1, 2021 12:00:00 AM GMT+05:30
         debugPrint("## Epoch Miss Match,Wrong Year : Sync RTC");
         g_appState.rtcSyncNow = true;
-        g_timers.pingEpoch = SendPing();
+        g_deviceConfig.pingEpoch = SendPing();
         m_iFrameInProcess = NO_FRAME;
         sendFrameType = NO_FRAME;
         m_oDisp.PopUpDisplayData.UploadStatus = (g_appState.isGPS) ? FRAME_GEN_FAILED : FRAME_GEN_FAILED_NO_GPS;
@@ -751,15 +752,15 @@ void cApplication::updateJsonAndSendFrame(void)
     Data["localIp"] = WiFi.localIP();
     Data["fwVer"] = FW_VERSION;
     Data["isReboot"] = -1;
-    if (m_oConfig.m_u8IsReboot)
+    if (g_deviceConfig.m_u8IsReboot)
     {
-        m_oConfig.m_u8IsReboot = 0;
-        Data["isReboot"] = m_oConfig.espResetReason;
+        g_deviceConfig.m_u8IsReboot = 0;
+        Data["isReboot"] = g_deviceConfig.espResetReason;
     }
     Data["FramesInBackUp"] = m_oDisp.DisplayGeneralVariables.backUpFramesCnt;
     Data["wifiSSId"] = WiFi.SSID();
     Data["rssi"] = WiFi.RSSI();
-    Data["epoch"] = m_oConfig.m_tEpoch;
+    Data["epoch"] = g_deviceConfig.m_tEpoch;
     Data["operationMode"] = g_config.operationMode;  // Using struct
     Data["lat"] = m_oGps.mPosition.m_lat;
     Data["lng"] = m_oGps.mPosition.m_lng;
@@ -1064,7 +1065,7 @@ void cApplication::applicationTask(void)
 
             long st = millis();
             GetCurrentPondName();
-            g_timers.lastPondNameCheckEpoch = m_oConfig.m_tEpoch;
+            g_timers.lastPondNameCheckEpoch = g_deviceConfig.m_tEpoch;
             debugPrint(" TIme taken to get all the ponds data: ");debugPrintln(millis() - st);
             sec5timer = 0;
             Serial.print(" Nearest Ponds: ");Serial.println(getNearestPondString());
@@ -1074,11 +1075,10 @@ void cApplication::applicationTask(void)
         g_timers.timeOutFrameCounter++;
 
         checkBattteryVoltage();
-        GetPondBoundaries();
 
         /*Read Time from GPS*/
         if (!Is_Simulated_Lat_Longs)
-            m_oConfig.m_tEpoch = m_oGps.Epoch;
+            g_deviceConfig.m_tEpoch = m_oGps.Epoch;
         if ((g_appState.isOnline == false) || (g_http_dev.is_connected == false))
         {
             g_timers.rebootAfterOfflineCnt++;
@@ -1281,50 +1281,43 @@ void cApplication::commandParseTask(void)
     /*function to read the DO and Temp values only when not setting the calibration values to the sensor*/
     if (!m_oDisp.StopReadingSensor)
     {
-        m_oSensor.getTempAndDoValues();
+        do_sensor_read_values(&g_do_sensor);
     }
     else if (m_oDisp.StopReadingSensor)
     {
-        m_oDisp.m_bCalibrationResponse = (m_oSensor.setCalibrationValues() ? 1 : (m_oSensor.setCalibrationValues() ? 1 : 0));
+        m_oDisp.m_bCalibrationResponse = (do_sensor_set_calibration(&g_do_sensor) ? 1 : (do_sensor_set_calibration(&g_do_sensor) ? 1 : 0));
         debugPrintf(" Calibration response values: %d \n", m_oDisp.m_bCalibrationResponse);
     }
 
-    // Track sensor communication status
-    static int sensorFailCntr = 0;
-
-    // Count consecutive sensor communication failures
-    if (m_oSensor.noSensor)
-    {
-        sensorFailCntr++;
-    }
-    else
-    {
-        sensorFailCntr = 0;
-    }
-
+    // Check sensor connection status (disconnected after 10 consecutive failures)
+    bool sensorConnected = do_sensor_is_connected(&g_do_sensor);
+    
     // Only update working values if we have valid sensor readings
-    // Ignore zero values from single communication failures
-    bool validSensorData = (m_oSensor.m_fDo > 0 && m_oSensor.m_fTemp > 0 && !m_oSensor.noSensor && (m_oSensor.m_fDoMgl >= -1.0 && m_oSensor.m_fDoMgl <= 25.0));
+    // Ignore zero values from communication failures
+    bool validSensorData = (g_do_sensor.do_percent > 0 && g_do_sensor.temp > 0 && 
+                           sensorConnected && 
+                           (g_do_sensor.do_mgl >= -1.0 && g_do_sensor.do_mgl <= 25.0));
 
     if (validSensorData)
     {
         // Update sensor data struct
-        g_sensorData.doMglValue = m_oSensor.m_fDoMgl;
-        g_sensorData.doSaturationVal = m_oSensor.m_fDo;
-        g_sensorData.tempVal = m_oSensor.m_fTemp;
+        g_sensorData.doMglValue = g_do_sensor.do_mgl;
+        g_sensorData.doSaturationVal = g_do_sensor.do_percent;
+        g_sensorData.tempVal = g_do_sensor.temp;
 
         // Update display
-        m_oDisp.DisplayLeftPanelData.DoSaturationValue = roundToDecimals(m_oSensor.m_fDo, 2);
-        m_oDisp.DisplayLeftPanelData.DoValueMgL = roundToDecimals(m_oSensor.m_fDoMgl, 2);
-        m_oDisp.DisplayLeftPanelData.TempValue = roundToDecimals(m_oSensor.m_fTemp, 1);
-        m_oDisp.DisplayLeftPanelData.Salinity = m_oSensor.m_fSalinity;
-    }
-
-    // Reset working values when sensor has been disconnected for too long, this prevents loss of valid data due to temporary communication issues
-    if (sensorFailCntr >= 5)
-    {
-        // debugPrintln(" [App][commandParseTask] Sensor disconnected - resetting working values");
+        m_oDisp.DisplayLeftPanelData.DoSaturationValue = roundToDecimals(g_do_sensor.do_percent, 2);
+        m_oDisp.DisplayLeftPanelData.DoValueMgL = roundToDecimals(g_do_sensor.do_mgl, 2);
+        m_oDisp.DisplayLeftPanelData.TempValue = roundToDecimals(g_do_sensor.temp, 1);
+        m_oDisp.DisplayLeftPanelData.Salinity = g_do_sensor.salinity;
+        
+        // Sensor is connected
         m_oDisp.DisplayGeneralVariables.IsSensorConnected = true;
+    }
+    else if (!sensorConnected)
+    {
+        // Sensor disconnected (10 consecutive failures) - reset working values
+        debugPrintln(" [App][commandParseTask] Sensor disconnected - resetting working values");
         
         // Reset sensor data struct
         g_sensorData.tempVal = 0.0;
@@ -1336,10 +1329,8 @@ void cApplication::commandParseTask(void)
         m_oDisp.DisplayLeftPanelData.DoSaturationValue = 0;
         m_oDisp.DisplayLeftPanelData.DoValueMgL = 0;
         m_oDisp.DisplayLeftPanelData.Salinity = 0.0;
-        sensorFailCntr = 0;
-    }
-    else
-    {
+        
+        // Update connection status
         m_oDisp.DisplayGeneralVariables.IsSensorConnected = false;
     }
 }
@@ -1390,14 +1381,14 @@ void cApplication::finalizeNearestPonds()
                 strcpy(g_currentPond.CurrentPondID, m_oPondConfig.m_oPondList[j].m_cPondId);
                 strcpy(g_currentPond.CurrentLocationId, m_oPondConfig.m_oPondList[j].m_cLocationID);
                 g_currentPond.CurrentPondSalinity = m_oPondConfig.m_oPondList[j].m_iSalinity;
-                m_oSensor.m_fSalinity = g_currentPond.CurrentPondSalinity;
+                g_do_sensor.salinity = g_currentPond.CurrentPondSalinity;
             }
         }
-        if (m_oSensor.m_fSalinity)
+        if (g_do_sensor.salinity)
         {
-            int val = m_oSensor.setSalinity();
+            int val = do_sensor_set_salinity(&g_do_sensor, g_do_sensor.salinity);
             if (!val)
-                m_oSensor.setSalinity();
+                do_sensor_set_salinity(&g_do_sensor, g_do_sensor.salinity);
         }
     }
     else
@@ -1408,7 +1399,7 @@ void cApplication::finalizeNearestPonds()
         strcpy(g_currentPond.CurrentLocationId, "");
         strcpy(g_currentPond.CurrentPondID, "");
         g_currentPond.CurrentPondSalinity = 0;
-        m_oSensor.m_fSalinity = 0;
+        g_do_sensor.salinity = 0;
         debugPrintln("There is No pond for the current coordinates");
     }
 
@@ -1520,7 +1511,7 @@ int cApplication::readPondNameFromFile(const char *path, m_oPosition data)
                             m_aPosts[i].m_lng = config["posts"][i]["lng"].as<double>();
                         }
                         /*Geo fencing*/
-                        double value = m_oGeofence.isBotInsideGeofence(m_aPosts, length, data);
+                        double value = geofence_is_bot_inside_geofence(&g_geofence, m_aPosts, length, data);
                         debugPrintf("value = %f\n", value);
                         return value;
                     }
@@ -1637,6 +1628,8 @@ void cApplication::frameHandlingTask(void)
         Serial.println(" Getting configuration initially");
         getConfigurationDeviceId();
     }
+
+    GetPondBoundaries();
 }
 
 /***********************************************************
@@ -1697,7 +1690,7 @@ void cApplication::CheckAndSyncRTC(void)
             }
             debugPrintln(currentEpoch);
             /*Convert local epoch to  GMT*/
-            if (m_oBsp.syncRTCTime(&m_oRtc, currentEpoch, m_oConfig.m_tEpoch))
+            if (m_oBsp.syncRTCTime(&m_oRtc, currentEpoch, g_deviceConfig.m_tEpoch))
             {
                 m_iRtcSyncCounter = 0;
             }
@@ -1962,13 +1955,14 @@ int cApplication::appInit(void)
     Serial2.begin(38400, SERIAL_8N1, 26, 27);
     m_oGps.gpsInit(&Serial2);
     /*Modbus and sensor initialization*/
-    m_oSensor.sensorInit(Serial1);
+    do_sensor_init(&g_do_sensor, "FLDBH-505A", &modbus_do_sensor_ops);
+    do_sensor_setup(&g_do_sensor, &Serial1, 0x01);
     char hostName[50] = {0};
     sprintf(hostName, "NA_IOT_DO_%s", WiFi.macAddress().c_str());
     WiFi.setHostname(hostName);
     /*Print the restart reason and if it is Brownout goes to sleepMode*/
     print_restart_reason();
-    if (m_oConfig.espResetReason == ESP_RST_BROWNOUT)
+    if (g_deviceConfig.espResetReason == ESP_RST_BROWNOUT)
     {
         debugPrintln("BrownOut Triggered");
         esp_deep_sleep_start();
@@ -1987,6 +1981,13 @@ int cApplication::appInit(void)
         debugPrintln("HTTP device initialized with default server");
     }
     
+    /*Geofence device initialization with ops structure*/
+    if (geofence_init(&g_geofence, "Geofence", &standard_geofence_ops) != 0) {
+        debugPrintln("Geofence device initialized");
+    } else {
+        debugPrintln("Geofence device init failed!");
+    }
+    
     /*read device memory and load Do config - this will update g_http_dev.server_ip*/
     readDeviceConfig();
     
@@ -2002,7 +2003,7 @@ int cApplication::appInit(void)
     /*Bsp GPIO Initalization*/
     m_oBsp.gpioInitialization();
     /*to know device is rebooted*/
-    m_oConfig.m_u8IsReboot = 1;
+    g_deviceConfig.m_u8IsReboot = 1;
     m_oBsp.hooterInit();
     allRpcInit();
     /*I2C initialization*/

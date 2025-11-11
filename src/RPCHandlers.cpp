@@ -6,7 +6,7 @@
 #include <ArduinoJson.h>
 
 // Debug macros
-#define SERIAL_DEBUG
+// #define SERIAL_DEBUG  // Disabled to save flash memory - Enable only for debugging
 #ifdef SERIAL_DEBUG
 #define debugPrint(...) Serial.print(__VA_ARGS__)
 #define debugPrintln(...) Serial.println(__VA_ARGS__)
@@ -93,13 +93,13 @@ void RPChandler_setCalValues(struct jsonrpc_request *r)
     double b = -1;
     if (mjson_get_number(r->params, r->params_len, "$.k", &k) != -1)
     {
-        m_oSensor.m_iK = k;
+        g_do_sensor.cal_k = k;
     }
     if (mjson_get_number(r->params, r->params_len, "$.b", &b) != -1)
     {
-        m_oSensor.m_iB = b;
+        g_do_sensor.cal_b = b;
     }
-    if (m_oSensor.setCalibrationValues())
+    if (do_sensor_set_calibration(&g_do_sensor))
     {
         jsonrpc_return_success(r, "{\"statusCode\":200,\"statusMsg\":\"Success.\"}");
     }
@@ -124,10 +124,10 @@ void RPChandler_setSalinity(struct jsonrpc_request *r)
     double val = -1;
     if (mjson_get_number(r->params, r->params_len, "$.salinity", &val) != -1)
     {
-        m_oSensor.m_fSalinity = val;
+        // Salinity will be set in the function call
     }
 
-    if (m_oSensor.setSalinity())
+    if (do_sensor_set_salinity(&g_do_sensor, val))
     {
         jsonrpc_return_success(r, "{\"statusCode\":200,\"statusMsg\":\"Success.\"}");
     }
@@ -187,8 +187,8 @@ void RPChandler_getSalinity(struct jsonrpc_request *r)
     debugPrintln("@@ Inside getSalinity...");
     debugPrintln(buff);
 
-    m_oSensor.getSalinity();
-    float salinity = m_oSensor.m_fSalinity;
+    do_sensor_get_salinity(&g_do_sensor);
+    float salinity = g_do_sensor.salinity;
 
     jsonrpc_return_success(r, "{\"statusCode\":200,\"statusMsg\":\"Success.\",\"salinity\":\"%s.\"}", String(salinity));
     setSharedFlag(g_appState.sendFrame, true);
@@ -201,8 +201,8 @@ void RPChandler_getPressure(struct jsonrpc_request *r)
     debugPrintln("@@ Inside getPressure...");
     debugPrintln(buff);
 
-    m_oSensor.getPressure();
-    float pressure = m_oSensor.m_fPressure;
+    do_sensor_get_pressure(&g_do_sensor);
+    float pressure = g_do_sensor.pressure;
 
     jsonrpc_return_success(r, "{\"statusCode\":200,\"statusMsg\":\"Success.\",\"pressure\":\"%s.\"}", String(pressure));
 
@@ -223,10 +223,10 @@ void RPChandler_setPressure(struct jsonrpc_request *r)
     double val = -1;
     if (mjson_get_number(r->params, r->params_len, "$.pressure", &val) != -1)
     {
-        m_oSensor.m_fPressure = val;
+        // Pressure will be set in the function call
     }
 
-    if (m_oSensor.setPressure())
+    if (do_sensor_set_pressure(&g_do_sensor, val))
     {
         jsonrpc_return_success(r, "{\"statusCode\":200,\"statusMsg\":\"Success.\"}");
     }
@@ -246,9 +246,9 @@ void RPChandler_getCalValues(struct jsonrpc_request *r)
     StaticJsonDocument<100> doc;
     debugPrintln("@@ Inside getCalValues...");
 
-    m_oSensor.getCalibrationValues();
-    doc["k"] = m_oSensor.m_iK;
-    doc["b"] = m_oSensor.m_iB;
+    do_sensor_get_calibration(&g_do_sensor);
+    doc["k"] = g_do_sensor.cal_k;
+    doc["b"] = g_do_sensor.cal_b;
 
     char result[100];
     serializeJson(doc, result);
@@ -265,7 +265,7 @@ void RPChandler_getCalValues(struct jsonrpc_request *r)
 void RPChandler_runSafeMode(struct jsonrpc_request *r)
 {
     debugPrintln("@@ Inside runSafeMode.....");
-    m_oConfig.m_bIsSafeModeOn = true;
+    g_deviceConfig.m_bIsSafeModeOn = true;
     jsonrpc_return_success(r, "{\"statusCode\":200,\"statusMsg\":\"success.\"}");
     setSharedFlag(g_appState.sendFrame, true);
 }
@@ -284,8 +284,8 @@ void RPChandler_whoAreYou(struct jsonrpc_request *r)
     doc["localIp"] = WiFi.localIP();
     doc["fwVersn"] = FW_VERSION;
     doc["BoardVersion"] = BOARD_VERSION;
-    doc["currentEpoch"] = m_oConfig.m_tEpoch;
-    doc["ResetReason"] = m_oConfig.espResetReason;
+    doc["currentEpoch"] = g_deviceConfig.m_tEpoch;
+    doc["ResetReason"] = g_deviceConfig.espResetReason;
     doc["FramesInBackup"] = m_oDisp.DisplayGeneralVariables.backUpFramesCnt;
     doc["Wifissid"] = WiFi.SSID();
     doc["rssi"] = WiFi.RSSI();
@@ -859,7 +859,7 @@ void RPChandler_SimulatedPosts(struct jsonrpc_request *r)
 
     double e = 0;
     mjson_get_number(r->params, r->params_len, "$.Epoch", &e);
-    m_oConfig.m_tEpoch = e;
+    g_deviceConfig.m_tEpoch = e;
 
     double val = -1, val2 = -1;
     if (mjson_get_number(r->params, r->params_len, "$.Lat", &val) != -1)
